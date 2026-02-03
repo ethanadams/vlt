@@ -96,19 +96,31 @@ func TestFormatRef(t *testing.T) {
 			name:      "simple key",
 			vaultPath: "secret/myapp",
 			key:       "password",
-			expected:  "ref+vault://secret/myapp/password#value",
+			expected:  "ref+vault://secret/myapp#password",
 		},
 		{
-			name:      "nested key",
+			name:      "dot-notation key preserved",
 			vaultPath: "secret/myapp",
 			key:       "database.password",
-			expected:  "ref+vault://secret/myapp/database.password#value",
+			expected:  "ref+vault://secret/myapp#database.password",
 		},
 		{
-			name:      "deep path",
+			name:      "deep path with dot-notation key",
 			vaultPath: "secret/prod/myapp/config",
 			key:       "api.key",
-			expected:  "ref+vault://secret/prod/myapp/config/api.key#value",
+			expected:  "ref+vault://secret/prod/myapp/config#api.key",
+		},
+		{
+			name:      "deeply nested dot-notation key",
+			vaultPath: "secret/myapp",
+			key:       "a.b.c",
+			expected:  "ref+vault://secret/myapp#a.b.c",
+		},
+		{
+			name:      "nested mount path",
+			vaultPath: "satellite/slc/myapp",
+			key:       "certs.ca_cert",
+			expected:  "ref+vault://satellite/slc/myapp#certs.ca_cert",
 		},
 	}
 

@@ -13,15 +13,20 @@ var rmRecursive bool
 
 var rmCmd = &cobra.Command{
 	Use:   "rm <path>",
-	Short: "Remove secrets at a path",
-	Long: `Remove secrets at the given path.
+	Short: "Remove a key, secret, or directory",
+	Long: `Remove a key, secret, or directory at the given path.
 
-If the path is a secret, deletes that secret.
-If the path is a directory, requires -r flag to delete recursively.
+The path is resolved to determine what to delete:
+  - If path resolves to a key: deletes that key from the secret
+  - If path is a secret: deletes the entire secret
+  - If path is a directory: requires -r flag to delete recursively
 
 Example:
-  vlt rm secret/myapp/config
-  # Deletes the secret at secret/myapp/config
+  vlt rm secret/myapp/db/password
+  # Deletes the "password" key from the db secret
+
+  vlt rm secret/myapp/db
+  # Deletes the entire db secret
 
   vlt rm secret/myapp -r
   # Deletes all secrets under secret/myapp`,
@@ -47,21 +52,26 @@ func runRm(ctx context.Context, path string) error {
 		return err
 	}
 
-	// Check if this path is a secret
-	exists, err := client.SecretExists(ctx, path)
-	if err != nil {
-		return err
-	}
-
-	if exists {
-		if err := client.DeleteSecret(ctx, path); err != nil {
+	// Try to resolve the path to see if it's a key within a secret
+	resolved, err := client.ResolvePath(ctx, path)
+	if err == nil {
+		if resolved.Key != "" {
+			// Path resolves to a key - delete just that key
+			if err := client.DeleteKey(ctx, resolved.SecretPath, resolved.Key); err != nil {
+				return err
+			}
+			fmt.Printf("Deleted key %q from %s\n", resolved.Key, resolved.SecretPath)
+			return nil
+		}
+		// Path is a secret - delete it
+		if err := client.DeleteSecret(ctx, resolved.SecretPath); err != nil {
 			return err
 		}
-		fmt.Printf("Deleted %s\n", path)
+		fmt.Printf("Deleted secret at %s\n", resolved.SecretPath)
 		return nil
 	}
 
-	// Check if it's a directory
+	// Path didn't resolve to a secret - check if it's a directory
 	dirs, hasSecrets, err := client.ListDirectories(ctx, path)
 	if err != nil {
 		return err

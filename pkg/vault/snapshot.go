@@ -17,10 +17,11 @@ type Snapshot struct {
 }
 
 // SnapshotSecret represents a single secret in a snapshot
+// With grouped storage, Data contains all key-value pairs in the secret
 type SnapshotSecret struct {
-	Value   any       `yaml:"value"`
-	Version int       `yaml:"version"`
-	Updated time.Time `yaml:"updated"`
+	Data    map[string]any `yaml:"data"`    // All key-value pairs in the secret
+	Version int            `yaml:"version"`
+	Updated time.Time      `yaml:"updated"`
 }
 
 // RestoreOptions configures how a restore operation behaves
@@ -60,7 +61,7 @@ func (c *Client) CreateSnapshot(ctx context.Context, path string) (*Snapshot, er
 	for _, relPath := range secretPaths {
 		fullPath := path + "/" + relPath
 
-		// Read the secret data
+		// Read the secret data (all key-value pairs)
 		data, err := c.ReadSecretRaw(ctx, fullPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read secret %s: %w", relPath, err)
@@ -72,14 +73,8 @@ func (c *Client) CreateSnapshot(ctx context.Context, path string) (*Snapshot, er
 			return nil, fmt.Errorf("failed to get metadata for %s: %w", relPath, err)
 		}
 
-		// Extract value - secrets are stored as {"value": ...}
-		var value any = data
-		if v, ok := data["value"]; ok && len(data) == 1 {
-			value = v
-		}
-
 		snapshot.Secrets[relPath] = SnapshotSecret{
-			Value:   value,
+			Data:    data,
 			Version: metadata.CurrentVersion,
 			Updated: metadata.UpdatedTime,
 		}
@@ -128,22 +123,11 @@ func (c *Client) RestoreSnapshot(ctx context.Context, snapshot *Snapshot, target
 
 		// Check if secret needs to be updated
 		if exists {
-			// Read current value to compare
+			// Read current data to compare
 			currentData, err := c.ReadSecretRaw(ctx, fullPath)
 			if err == nil {
-				// Compare values
-				var snapshotValue any = snapshotSecret.Value
-				if sv, ok := snapshotValue.(map[string]any); ok {
-					if v, ok := sv["value"]; ok && len(sv) == 1 {
-						snapshotValue = v
-					}
-				}
-				var currentValue any = currentData
-				if v, ok := currentData["value"]; ok && len(currentData) == 1 {
-					currentValue = v
-				}
-
-				if fmt.Sprintf("%v", currentValue) == fmt.Sprintf("%v", snapshotValue) {
+				// Compare all key-value pairs
+				if mapsEqual(currentData, snapshotSecret.Data) {
 					result.Unchanged = append(result.Unchanged, relPath)
 					continue
 				}
@@ -154,17 +138,9 @@ func (c *Client) RestoreSnapshot(ctx context.Context, snapshot *Snapshot, target
 		}
 
 		if !opts.DryRun {
-			// Write the secret
-			data := snapshotSecret.Value
-			if dataMap, ok := data.(map[string]any); ok {
-				if err := c.WriteSecret(ctx, fullPath, dataMap); err != nil {
-					return nil, fmt.Errorf("failed to write secret %s: %w", relPath, err)
-				}
-			} else {
-				// Simple value - wrap in {"value": ...}
-				if err := c.WriteSecret(ctx, fullPath, map[string]any{"value": data}); err != nil {
-					return nil, fmt.Errorf("failed to write secret %s: %w", relPath, err)
-				}
+			// Write the secret with all its key-value pairs
+			if err := c.WriteSecret(ctx, fullPath, snapshotSecret.Data); err != nil {
+				return nil, fmt.Errorf("failed to write secret %s: %w", relPath, err)
 			}
 		}
 	}
@@ -193,4 +169,21 @@ func (r *RestoreResult) HasChanges() bool {
 // TotalChanges returns the total number of changes
 func (r *RestoreResult) TotalChanges() int {
 	return len(r.Added) + len(r.Updated) + len(r.Deleted)
+}
+
+// mapsEqual compares two maps for equality
+func mapsEqual(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok {
+			return false
+		}
+		if fmt.Sprintf("%v", va) != fmt.Sprintf("%v", vb) {
+			return false
+		}
+	}
+	return true
 }

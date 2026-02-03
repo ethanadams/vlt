@@ -43,26 +43,41 @@ vlt/
 └── go.mod                 # Module: github.com/ethanadams/vlt
 ```
 
+## Storage Model
+
+Secrets are stored with grouped key-value pairs. Each Vault secret can contain multiple keys:
+
+```
+secret/myapp/db  → {password: "pass123", host: "localhost", port: "5432"}
+secret/myapp/api → {key: "abc123", endpoint: "https://api.example.com"}
+```
+
+**Path Resolution:**
+- `secret/myapp/db` - References the entire secret (all keys)
+- `secret/myapp/db/password` - References the "password" key within the db secret
+
+For writes, the path is parsed as: parent = secret path, last segment = key name.
+
 ## Commands
 
 | Command | Flags | Description |
 |---------|-------|-------------|
-| `ls <path>` | `-l` | List secrets/dirs, `-l` shows metadata (path required) |
-| `get` | | Get secrets as YAML (recursive by default) |
-| `diff` | `--summary`, `--keys-only`, `-q`, `--sops`, `--show-values` | Compare secrets/versions between paths or with local file (see Version Syntax below) |
-| `add` | | Add secret (value from arg or stdin) |
-| `update` | | Update existing secret |
-| `rm` | `-r` | Remove secret, `-r` for directories |
-| `mv` | | Move/rename (handles dirs automatically) |
-| `copy` | `-r` | Copy secret, `-r` for directories |
+| `ls <path>` | `-l`, `-k` | List secrets/dirs, `-l` shows metadata, `-k` lists keys within a secret |
+| `get <path>` | | Get secrets/keys (path resolution determines scope) |
+| `diff` | `--summary`, `--keys-only`, `-q`, `--sops`, `--show-values` | Compare secrets/versions between paths or with local file |
+| `add <path> [value]` | | Add key to secret (path format: secret/path/key) |
+| `update <path> [value]` | | Update existing key |
+| `rm <path>` | `-r` | Remove key, secret, or directory (`-r` for directories) |
+| `mv` | | Move/rename key, secret, or directory |
+| `copy` | `-r` | Copy key or secret, `-r` for directories |
 | `export` | `-r`, `-o` | Export to YAML files |
-| `import` | `--dry-run`, `--append-name`, `--name`, `--sops`, `--update-counterpart` | Import from YAML files (SOPS support, auto-detects mounts) |
+| `import` | `--dry-run`, `--append-name`, `--name`, `--sops`, `--update-counterpart` | Import from YAML files |
 | `duplicates` | | Find duplicate values (recursive) |
-| `edit` | | Edit a secret in $EDITOR (like kubectl edit) |
-| `history` | `-v`, `-n`, `--all`, `--show-values` | Show version history for secrets |
+| `edit` | | Edit a secret in $EDITOR |
+| `history` | `-v`, `-n`, `--all`, `--show-values` | Show version history |
 | `tree` | `-l` | Display secrets in a tree view |
-| `snapshot` | `-o` | Create point-in-time backup of secrets (required: -o) |
-| `restore` | `--dry-run`, `--verify`, `--no-delete` | Restore secrets from a snapshot |
+| `snapshot` | `-o` | Create point-in-time backup (required: -o) |
+| `restore` | `--dry-run`, `--verify`, `--no-delete` | Restore from snapshot |
 
 ### Diff Version Syntax
 
@@ -124,34 +139,40 @@ func runCmd(ctx context.Context, arg string) error {
 ```
 
 ### High-Level Operations (pkg/vault/operations.go)
-- `Add(ctx, path, value)` - Add a new secret (fails if already exists)
-- `Update(ctx, path, value)` - Update existing secret (fails if not found)
-- `Get(ctx, path)` - Get all secrets recursively as nested map
+- `Add(ctx, path, value)` - Add a new key (path format: secret/path/key, fails if key exists)
+- `Update(ctx, path, value)` - Update existing key (path resolved to find secret+key)
+- `Get(ctx, path)` - Get secrets/keys (path resolution determines scope)
 - `GetValue(ctx, path, key)` - Get specific key from a secret
 - `List(ctx, path)` - List entries (dirs and secrets) at path
 - `ListWithMetadata(ctx, path)` - List with version/timestamp metadata
-- `Copy(ctx, src, dst)` - Copy single secret
+- `Copy(ctx, src, dst)` - Copy key or secret
 - `CopyRecursive(ctx, src, dst)` - Copy all secrets under path
-- `Move(ctx, src, dst)` - Move single secret
+- `Move(ctx, src, dst)` - Move key or secret
 - `MoveRecursive(ctx, src, dst)` - Move all secrets under path
 - `DeleteRecursive(ctx, path)` - Delete all secrets under path
 - `Export(ctx, path)` - Export secrets as nested map
-- `Import(ctx, basePath, data)` - Import from nested map (auto-detects mount)
+- `Import(ctx, basePath, data)` - Import from nested map (creates secrets from structure)
 - `FindDuplicates(ctx, path)` - Find secrets with duplicate values
 
 ### Low-Level Client Methods (pkg/vault/client.go)
+- `ResolvePath(ctx, path)` - Resolve path to secret + optional key
+- `ParseWritePath(path)` - Parse path for writes (parent = secret, last = key)
+- `ReadKey(ctx, secretPath, key)` - Read specific key from secret
+- `WriteKey(ctx, secretPath, key, value)` - Write/update a key in a secret
+- `DeleteKey(ctx, secretPath, key)` - Delete a key from a secret
+- `KeyExists(ctx, secretPath, key)` - Check if key exists
 - `ListSecrets(ctx, path)` - Recursive list, returns nested map
 - `ListSecretPaths(ctx, path)` - Returns []string of relative paths
 - `ListDirectories(ctx, path)` - Returns dirs, hasSecrets, err
-- `ReadSecretRaw(ctx, path)` - Read single secret data
-- `ReadSecretVersion(ctx, path, version)` - Read specific version of a secret
+- `ReadSecretRaw(ctx, path)` - Read single secret data (all key-value pairs)
+- `ReadSecretVersion(ctx, path, version)` - Read specific version
 - `WriteSecret(ctx, path, data)` - Write secret (auto-detects mount)
-- `WriteSecrets(ctx, basePath, data)` - Bulk write from flattened map
+- `WriteSecrets(ctx, basePath, data)` - Write multiple keys to a secret
 - `DeleteSecret(ctx, path)` - Delete secret (and metadata)
 - `SecretExists(ctx, path)` - Check if secret exists
 - `IsDirectory(ctx, path)` - Check if path is directory
 - `GetMetadata(ctx, path)` - Get secret metadata (version, times)
-- `GetVersionHistory(ctx, path)` - Get version history for a secret (version, created time, destroyed/deleted flags)
+- `GetVersionHistory(ctx, path)` - Get version history
 - `ResolveMountPath(ctx, path)` - Auto-detect KV v2 mount from path
 
 Note: Mounts are auto-detected by querying /sys/mounts. Nested mounts like "satellite/slc" are handled automatically.
@@ -190,15 +211,12 @@ Note: Mounts are auto-detected by querying /sys/mounts. Nested mounts like "sate
 - `Update(path, vaultPath, keys)` - Update YAML file with vault refs (ref+vault://...)
 - `FormatRef(vaultPath, key)` - Format a single vault reference string
 
-### Secrets Structure
-Secrets are stored with `{"value": "..."}` format. The `expandSecrets` function in client.go transforms this for display.
-
 ## Safety Behaviors
 
 Commands are designed to fail safely:
-- `add` fails if secret already exists (use `update` instead)
-- `update` fails if secret does not exist (use `add` for new secrets)
-- `copy`/`mv` fail if destination already exists
+- `add` fails if key already exists (use `update` instead)
+- `update` fails if key does not exist (use `add` for new keys)
+- `copy`/`mv` fail if destination key/secret already exists
 - `get`, `export`, `diff`, `duplicates` fail on non-existent paths
 - `rm` without `-r` fails on directories
 
@@ -249,14 +267,22 @@ cfg := &config.Config{VaultAddr: "https://vault:8200", VaultToken: "token"}
 client, _ := vault.NewClient(cfg)
 
 // High-level operations
-client.Add(ctx, "secret/myapp/apikey", "secret-value")
-client.Update(ctx, "secret/myapp/apikey", "new-value")
-secrets, _ := client.Get(ctx, "secret/myapp")
-client.Copy(ctx, "secret/myapp/config", "secret/myapp/config-backup")
-client.Move(ctx, "secret/old", "secret/new")
+// Path format: secret/path/key - parent is secret, last segment is key
+client.Add(ctx, "secret/myapp/db/password", "secret-value")
+client.Update(ctx, "secret/myapp/db/password", "new-value")
+
+// Get with path resolution
+secrets, _ := client.Get(ctx, "secret/myapp")          // All secrets under myapp
+secrets, _ := client.Get(ctx, "secret/myapp/db")       // All keys in db secret
+secrets, _ := client.Get(ctx, "secret/myapp/db/password") // Just the password key
+
+// Copy/move keys or secrets
+client.Copy(ctx, "secret/myapp/db", "secret/myapp/db-backup")
+client.Move(ctx, "secret/old/key", "secret/new/key")
 client.DeleteRecursive(ctx, "secret/myapp/old")
 
 // Import from nested map (e.g., parsed YAML)
+// Flattens to dot-notation: secret/myapp with key "admin.password"
 data := map[string]any{
     "admin": map[string]any{
         "password": "secret",
@@ -268,8 +294,8 @@ client.Import(ctx, "secret/myapp", data)
 duplicates, _ := client.FindDuplicates(ctx, "secret/myapp")
 
 // Update counterpart file with vault references
-// Useful for vals/helmfile workflows
+// Refs use KV v2 format with /data/ for vals/Helm compatibility
 keys := []string{"admin.password", "db.url"}
 counterpart.Update("app.yaml", "secret/myapp", keys)
-// app.yaml now contains: admin.password: ref+vault://secret/myapp/admin.password#value
+// app.yaml now contains: admin.password: ref+vault://secret/data/myapp#admin.password
 ```

@@ -11,14 +11,19 @@ import (
 
 var addCmd = &cobra.Command{
 	Use:   "add <path> [value]",
-	Short: "Add a new secret at a path",
-	Long: `Add a new secret at the given path.
+	Short: "Add a new key to a secret",
+	Long: `Add a new key-value pair to a secret.
+
+The path format is: secret/path/key
+  - The parent path (secret/path) is the secret location
+  - The last segment (key) is the key name within that secret
 
 The value can be provided as an argument or piped via stdin.
-Fails if the secret already exists (use 'update' to modify existing secrets).
+Fails if the key already exists (use 'update' to modify existing keys).
 
 Example:
-  vlt add secret/myapp/apiKey "my-secret-value"
+  vlt add secret/myapp/db/password "my-secret-value"
+  # Adds key "password" to secret at secret/myapp/db
 
   cat credentials.json | vlt add secret/myapp/gcp_sa -
 
@@ -52,6 +57,7 @@ func runAdd(ctx context.Context, path, value string) error {
 		return err
 	}
 
-	fmt.Printf("Added secret at %s\n", path)
+	secretPath, key := vault.ParseWritePath(path)
+	fmt.Printf("Added key %q to secret at %s\n", key, secretPath)
 	return nil
 }

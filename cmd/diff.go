@@ -172,6 +172,30 @@ func getSecretsFromVault(ctx context.Context, client *vault.Client, path string)
 
 	// If no version specified, use the simple recursive Get
 	if !spec.HasVersion() {
+		// Try to resolve the path to see if it's a secret or directory
+		resolved, err := client.ResolvePath(ctx, basePath)
+		if err == nil {
+			// Path resolves to a secret (possibly with key)
+			if resolved.Key != "" {
+				// Single key - return just that
+				value, err := client.ReadKey(ctx, resolved.SecretPath, resolved.Key)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{resolved.Key: value}, nil
+			}
+			// Whole secret - read and flatten it
+			data, err := client.ReadSecretRaw(ctx, resolved.SecretPath)
+			if err != nil {
+				return nil, err
+			}
+			if len(data) == 0 {
+				return nil, fmt.Errorf("no secrets found at %s", basePath)
+			}
+			return data, nil
+		}
+
+		// Path didn't resolve - try as a directory
 		secrets, err := client.Get(ctx, basePath)
 		if err != nil {
 			return nil, err
@@ -212,9 +236,8 @@ func getSecretsFromVault(ctx context.Context, client *vault.Client, path string)
 	if err != nil {
 		return nil, err
 	}
-	// Flatten and extract values to match the format from regular Get path
-	// forDirectory=false keeps standalone "value" key for single secrets
-	return vault.FlattenAndExtractValues(secrets, false), nil
+	// Return the secret data directly (no need for value extraction)
+	return secrets, nil
 }
 
 // getSecretsFromFile reads and parses a YAML file, returning a flat key->value map

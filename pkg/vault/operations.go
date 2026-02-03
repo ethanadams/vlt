@@ -5,42 +5,52 @@ import (
 	"fmt"
 )
 
-// Add writes a new secret value at the given path.
-// The value is stored as {"value": value}.
-// Returns an error if the secret already exists (use Update instead).
+// Add writes a new key-value pair to a secret.
+// The path format is secret/path/key - parent path is the secret, last segment is the key.
+// Creates the secret if it doesn't exist.
+// Returns an error if the key already exists (use Update instead).
 func (c *Client) Add(ctx context.Context, path, value string) error {
-	exists, err := c.SecretExists(ctx, path)
+	secretPath, key := ParseWritePath(path)
+	if key == "" {
+		return fmt.Errorf("path must include a key: %s (e.g., %s/keyname)", path, path)
+	}
+
+	// Check if the key already exists
+	exists, err := c.KeyExists(ctx, secretPath, key)
 	if err != nil {
 		return err
 	}
 	if exists {
-		return fmt.Errorf("secret already exists at %s (use 'update' to modify existing secrets)", path)
+		return fmt.Errorf("key %q already exists at %s (use 'update' to modify existing keys)", key, secretPath)
 	}
 
-	data := map[string]any{
-		"value": value,
-	}
-	return c.WriteSecret(ctx, path, data)
+	return c.WriteKey(ctx, secretPath, key, value)
 }
 
-// Update updates an existing secret value at the given path.
-// Returns an error if the secret does not exist.
+// Update updates an existing key in a secret.
+// The path format is secret/path/key - resolves to find the secret and key.
+// Returns an error if the key does not exist.
 func (c *Client) Update(ctx context.Context, path, value string) error {
-	exists, err := c.SecretExists(ctx, path)
+	// Try to resolve the path to find existing secret/key
+	resolved, err := c.ResolvePath(ctx, path)
 	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("secret not found at %s", path)
+		// Path doesn't exist - try parsing as write path
+		secretPath, key := ParseWritePath(path)
+		if key == "" {
+			return fmt.Errorf("key not found at %s", path)
+		}
+		return fmt.Errorf("key %q not found at %s", key, secretPath)
 	}
 
-	data := map[string]any{
-		"value": value,
+	if resolved.Key == "" {
+		return fmt.Errorf("path %s is a secret, not a key (specify a key to update)", path)
 	}
-	return c.WriteSecret(ctx, path, data)
+
+	return c.WriteKey(ctx, resolved.SecretPath, resolved.Key, value)
 }
 
-// GetValue retrieves a specific key from a secret at the given path.
+// GetValue retrieves a specific key from a secret.
+// The path should be a secret path, and key is the key name within it.
 func (c *Client) GetValue(ctx context.Context, path, key string) (any, error) {
 	data, err := c.ReadSecretRaw(ctx, path)
 	if err != nil {
@@ -58,11 +68,40 @@ func (c *Client) GetValue(ctx context.Context, path, key string) (any, error) {
 	return value, nil
 }
 
-// Get retrieves all secrets at a path recursively, returning them as a nested map.
+// Get retrieves secrets at a path.
+// If the path resolves to a key, returns just that key's value.
+// If it resolves to a secret, returns all key-value pairs.
+// For directories, recursively gets all secrets under it.
 func (c *Client) Get(ctx context.Context, path string) (map[string]any, error) {
+	// First, try to resolve the path to see if it points to a specific key
+	resolved, err := c.ResolvePath(ctx, path)
+	if err == nil {
+		if resolved.Key != "" {
+			// Path resolves to a specific key
+			value, err := c.ReadKey(ctx, resolved.SecretPath, resolved.Key)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{resolved.Key: value}, nil
+		}
+		// Path is a secret - return all its keys
+		data, err := c.ReadSecretRaw(ctx, resolved.SecretPath)
+		if err != nil {
+			return nil, err
+		}
+		if data == nil {
+			return nil, fmt.Errorf("no secrets found at %s", path)
+		}
+		return data, nil
+	}
+
+	// Path didn't resolve to an existing secret - try as a directory
 	result := make(map[string]any)
 	if err := c.getRecursive(ctx, path, result); err != nil {
 		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no secrets found at %s", path)
 	}
 	return result, nil
 }
@@ -196,15 +235,31 @@ func (c *Client) ListWithMetadata(ctx context.Context, path string) ([]ListEntry
 }
 
 // readAndValidateSource reads source data and validates it exists
-func (c *Client) readAndValidateSource(ctx context.Context, src string) (map[string]any, error) {
-	srcData, err := c.ReadSecretRaw(ctx, src)
+// Also supports reading a specific key if resolved path has one
+func (c *Client) readAndValidateSource(ctx context.Context, src string) (map[string]any, *ResolvedPath, error) {
+	// Try to resolve the path
+	resolved, err := c.ResolvePath(ctx, src)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("source not found: %s", src)
+	}
+
+	srcData, err := c.ReadSecretRaw(ctx, resolved.SecretPath)
+	if err != nil {
+		return nil, nil, err
 	}
 	if len(srcData) == 0 {
-		return nil, fmt.Errorf("source secret does not exist: %s", src)
+		return nil, nil, fmt.Errorf("source secret does not exist: %s", src)
 	}
-	return srcData, nil
+
+	// If a specific key was requested, extract just that
+	if resolved.Key != "" {
+		if val, ok := srcData[resolved.Key]; ok {
+			return map[string]any{resolved.Key: val}, resolved, nil
+		}
+		return nil, nil, fmt.Errorf("key %q not found in %s", resolved.Key, resolved.SecretPath)
+	}
+
+	return srcData, resolved, nil
 }
 
 // checkDestinationNotExists validates that destination doesn't exist
@@ -247,14 +302,39 @@ func (c *Client) copySecrets(ctx context.Context, src, dst string, relPaths []st
 	return nil
 }
 
-// Copy copies a single secret from src to dst.
+// Copy copies a secret or key from src to dst.
+// If src is a key path, copies just that key to dst (which should also be a key path).
+// If src is a secret path, copies the whole secret.
 // Returns an error if the destination already exists.
 func (c *Client) Copy(ctx context.Context, src, dst string) error {
-	srcData, err := c.readAndValidateSource(ctx, src)
+	srcData, srcResolved, err := c.readAndValidateSource(ctx, src)
 	if err != nil {
 		return err
 	}
 
+	if srcResolved.Key != "" {
+		// Copying a single key - dst should be a key path
+		dstSecret, dstKey := ParseWritePath(dst)
+		if dstKey == "" {
+			// If no key specified in dst, use source key name
+			dstKey = srcResolved.Key
+			dstSecret = dst
+		}
+
+		// Check if destination key exists
+		exists, err := c.KeyExists(ctx, dstSecret, dstKey)
+		if err != nil {
+			// Secret might not exist, that's OK
+			exists = false
+		}
+		if exists {
+			return fmt.Errorf("destination key already exists: %s/%s", dstSecret, dstKey)
+		}
+
+		return c.WriteKey(ctx, dstSecret, dstKey, fmt.Sprintf("%v", srcData[srcResolved.Key]))
+	}
+
+	// Copying a whole secret
 	if err := c.checkDestinationNotExists(ctx, dst); err != nil {
 		return err
 	}
@@ -289,14 +369,50 @@ func (c *Client) CopyRecursive(ctx context.Context, src, dst string) (int, error
 	return len(secretPaths), nil
 }
 
-// Move moves a single secret from src to dst.
+// Move moves a secret or key from src to dst.
+// If src is a key path, moves just that key to dst.
+// If src is a secret path, moves the whole secret.
 // Returns an error if the destination already exists.
 func (c *Client) Move(ctx context.Context, src, dst string) error {
-	srcData, err := c.readAndValidateSource(ctx, src)
+	srcData, srcResolved, err := c.readAndValidateSource(ctx, src)
 	if err != nil {
 		return err
 	}
 
+	if srcResolved.Key != "" {
+		// Moving a single key
+		dstSecret, dstKey := ParseWritePath(dst)
+		if dstKey == "" {
+			// If no key specified in dst, use source key name
+			dstKey = srcResolved.Key
+			dstSecret = dst
+		}
+
+		// Check if destination key exists
+		exists, err := c.KeyExists(ctx, dstSecret, dstKey)
+		if err != nil {
+			exists = false
+		}
+		if exists {
+			return fmt.Errorf("destination key already exists: %s/%s", dstSecret, dstKey)
+		}
+
+		// Write to destination
+		if err := c.WriteKey(ctx, dstSecret, dstKey, fmt.Sprintf("%v", srcData[srcResolved.Key])); err != nil {
+			return err
+		}
+
+		// Delete from source
+		if err := c.DeleteKey(ctx, srcResolved.SecretPath, srcResolved.Key); err != nil {
+			// Rollback - delete the destination key
+			_ = c.DeleteKey(ctx, dstSecret, dstKey)
+			return fmt.Errorf("failed to delete source key: %w", err)
+		}
+
+		return nil
+	}
+
+	// Moving a whole secret
 	if err := c.checkDestinationNotExists(ctx, dst); err != nil {
 		return err
 	}
@@ -436,18 +552,43 @@ func (c *Client) Export(ctx context.Context, path string) (map[string]any, error
 	return c.ListSecrets(ctx, path)
 }
 
-// Import imports secrets from a nested map, flattening and writing each value.
-// Returns the number of secrets written.
+// Import imports secrets from a nested map.
+// The YAML is flattened to dot-notation keys and stored in a single secret at basePath.
+// For example:
+//
+//	db:
+//	  password: secret123
+//	  host: localhost
+//
+// Becomes a secret at basePath with keys: db.password, db.host
+// Returns the number of keys written.
 func (c *Client) Import(ctx context.Context, basePath string, data map[string]any) (int, error) {
+	// Flatten the nested map to dot-notation keys
 	flattened := Flatten(data)
-	return c.WriteSecrets(ctx, basePath, flattened)
+
+	// Convert all values to strings
+	secretData := make(map[string]any)
+	for k, v := range flattened {
+		secretData[k] = fmt.Sprintf("%v", v)
+	}
+
+	if len(secretData) == 0 {
+		return 0, fmt.Errorf("no keys to import")
+	}
+
+	if err := c.WriteSecret(ctx, basePath, secretData); err != nil {
+		return 0, err
+	}
+
+	return len(secretData), nil
 }
 
 // ImportWithMount imports secrets with an explicit mount point.
 // Use this when the mount path contains slashes (e.g., "satellite/slc").
 func (c *Client) ImportWithMount(ctx context.Context, mount, basePath string, data map[string]any) (int, error) {
-	flattened := Flatten(data)
-	return c.WriteSecretsWithMount(ctx, mount, basePath, flattened)
+	// For mount-specified imports, use the provided mount in path construction
+	fullPath := mount + "/" + basePath
+	return c.Import(ctx, fullPath, data)
 }
 
 // DuplicateGroup represents a group of paths that share the same value
@@ -490,7 +631,8 @@ func (c *Client) collectValues(ctx context.Context, basePath, prefix string, val
 	if len(data) > 0 {
 		// Process each key in the secret
 		for key, value := range data {
-			fullPath := currentPath + "." + key
+			// Use slash notation for the full path: currentPath/key
+			fullPath := currentPath + "/" + key
 			hash := hashValue(value)
 			valueMap[hash] = append(valueMap[hash], fullPath)
 		}
@@ -516,7 +658,8 @@ func (c *Client) collectValues(ctx context.Context, basePath, prefix string, val
 			}
 
 			for key, value := range secretData {
-				fullPath := secretPath + "." + key
+				// Use slash notation for the full path: secretPath/key
+				fullPath := secretPath + "/" + key
 				hash := hashValue(value)
 				valueMap[hash] = append(valueMap[hash], fullPath)
 			}

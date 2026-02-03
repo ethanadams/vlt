@@ -91,7 +91,7 @@ func Update(path, vaultPath string, keys []string) (*UpdateResult, error) {
 
 	// Update or add each key
 	for _, key := range keys {
-		vaultRef := fmt.Sprintf("ref+vault://%s/%s#value", vaultPath, key)
+		vaultRef := FormatRef(vaultPath, key)
 		keyPath := strings.Split(key, ".")
 
 		// Try to find and update the key, or add at deepest matching path
@@ -117,8 +117,12 @@ func Update(path, vaultPath string, keys []string) (*UpdateResult, error) {
 }
 
 // FormatRef formats a vault reference string for a given path and key.
+// Keys are stored with dot notation (e.g., "certs.ca_cert") in a single secret,
+// so the reference keeps the key as-is.
+// vals automatically handles KV v2 /data/ path insertion, so we just use the logical path.
 func FormatRef(vaultPath, key string) string {
-	return fmt.Sprintf("ref+vault://%s/%s#value", vaultPath, key)
+	// vals auto-detects KV v2 and inserts /data/ automatically
+	return fmt.Sprintf("ref+vault://%s#%s", vaultPath, key)
 }
 
 // detectIndent detects the indentation used in YAML content.

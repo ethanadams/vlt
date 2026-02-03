@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 
 	"github.com/ethanadams/vlt/pkg/config"
 	"github.com/ethanadams/vlt/pkg/vault"
@@ -24,13 +23,13 @@ Opens the secret(s) at the given path in $EDITOR (or $VISUAL, or vi).
 After you save and close the editor, changes are written back to Vault.
 
 If the path is a directory, all secrets under it are loaded for editing.
-If the path is a single secret, only that secret is edited.
+If the path is a single secret, all keys in that secret are edited.
 
 If no changes are detected, nothing is updated.
 
 Example:
-  vlt edit secret/myapp/config
-  # Edit a single secret
+  vlt edit secret/myapp/db
+  # Edit all keys in the db secret
 
   vlt edit secret/myapp
   # Edit all secrets under myapp
@@ -58,16 +57,26 @@ func runEdit(ctx context.Context, path string) error {
 		return err
 	}
 
-	// Check if path is a directory (has children)
+	// Try to resolve the path to see if it's a secret
+	resolved, err := client.ResolvePath(ctx, path)
+	if err == nil {
+		if resolved.Key != "" {
+			return fmt.Errorf("cannot edit a single key (%s); edit the whole secret instead: %s", resolved.Key, resolved.SecretPath)
+		}
+		return runEditSingle(ctx, client, resolved.SecretPath)
+	}
+
+	// Path didn't resolve to a secret - check if it's a directory
 	isDir, err := client.IsDirectory(ctx, path)
 	if err != nil {
-		return fmt.Errorf("failed to check path: %w", err)
+		return fmt.Errorf("path not found: %s", path)
 	}
 
 	if isDir {
 		return runEditRecursive(ctx, client, path)
 	}
-	return runEditSingle(ctx, client, path)
+
+	return fmt.Errorf("no secret or directory found at %s", path)
 }
 
 func runEditSingle(ctx context.Context, client *vault.Client, path string) error {
@@ -125,9 +134,6 @@ func runEditRecursive(ctx context.Context, client *vault.Client, path string) er
 		return fmt.Errorf("no secrets found at %s", path)
 	}
 
-	// Flatten for comparison later
-	originalFlat := vault.Flatten(secrets)
-
 	// Convert to YAML
 	originalYAML, err := yaml.Marshal(secrets)
 	if err != nil {
@@ -152,72 +158,17 @@ func runEditRecursive(ctx context.Context, client *vault.Client, path string) er
 		return fmt.Errorf("failed to parse modified YAML: %w", err)
 	}
 
-	// Flatten modified secrets
-	modifiedFlat := vault.Flatten(newSecrets)
-
-	// Find changes
-	var added, changed, removed []string
-
-	for key := range modifiedFlat {
-		if _, exists := originalFlat[key]; !exists {
-			added = append(added, key)
-		} else if fmt.Sprintf("%v", modifiedFlat[key]) != fmt.Sprintf("%v", originalFlat[key]) {
-			changed = append(changed, key)
-		}
+	// Import the modified structure back to Vault
+	// This will create/update secrets based on the YAML structure
+	count, err := client.Import(ctx, path, newSecrets)
+	if err != nil {
+		return fmt.Errorf("failed to write changes: %w", err)
 	}
 
-	for key := range originalFlat {
-		if _, exists := modifiedFlat[key]; !exists {
-			removed = append(removed, key)
-		}
-	}
-
-	// Sort for consistent output
-	sort.Strings(added)
-	sort.Strings(changed)
-	sort.Strings(removed)
-
-	if len(added) == 0 && len(changed) == 0 && len(removed) == 0 {
-		fmt.Println("Edit cancelled, no changes made.")
-		return nil
-	}
-
-	// Write changes to Vault
-	writeCount := 0
-	for _, key := range added {
-		secretPath := path + "/" + key
-		if err := client.Add(ctx, secretPath, fmt.Sprintf("%v", modifiedFlat[key])); err != nil {
-			return fmt.Errorf("failed to add %s: %w", key, err)
-		}
-		fmt.Printf("  + %s\n", key)
-		writeCount++
-	}
-
-	for _, key := range changed {
-		secretPath := path + "/" + key
-		if err := client.Update(ctx, secretPath, fmt.Sprintf("%v", modifiedFlat[key])); err != nil {
-			return fmt.Errorf("failed to update %s: %w", key, err)
-		}
-		fmt.Printf("  ~ %s\n", key)
-		writeCount++
-	}
-
-	// Delete removed keys
-	deleteCount := 0
-	for _, key := range removed {
-		secretPath := path + "/" + key
-		if err := client.DeleteSecret(ctx, secretPath); err != nil {
-			return fmt.Errorf("failed to delete %s: %w", key, err)
-		}
-		fmt.Printf("  - %s\n", key)
-		deleteCount++
-	}
-
-	total := writeCount + deleteCount
-	if total == 1 {
-		fmt.Printf("\nUpdated 1 secret.\n")
+	if count == 1 {
+		fmt.Printf("Updated 1 key.\n")
 	} else {
-		fmt.Printf("\nUpdated %d secrets.\n", total)
+		fmt.Printf("Updated %d keys.\n", count)
 	}
 	return nil
 }

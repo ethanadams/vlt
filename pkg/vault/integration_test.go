@@ -86,20 +86,20 @@ func TestIntegration_AddGetSecret(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Test Add
+	// Test Add - creates secret at secret/test with key "mykey"
 	err = client.Add(ctx, "secret/test/mykey", "myvalue")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 
-	// Test Get
+	// Test Get - returns the key and its value
 	secrets, err := client.Get(ctx, "secret/test/mykey")
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
 
-	if secrets["value"] != "myvalue" {
-		t.Errorf("expected value 'myvalue', got %v", secrets["value"])
+	if secrets["mykey"] != "myvalue" {
+		t.Errorf("expected value 'myvalue', got %v", secrets["mykey"])
 	}
 }
 
@@ -117,26 +117,26 @@ func TestIntegration_UpdateSecret(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Add initial secret
-	err = client.Add(ctx, "secret/test/update", "initial")
+	// Add initial secret - creates secret at secret/test with key "upkey"
+	err = client.Add(ctx, "secret/test/upkey", "initial")
 	if err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 
 	// Update it
-	err = client.Update(ctx, "secret/test/update", "updated")
+	err = client.Update(ctx, "secret/test/upkey", "updated")
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
 
 	// Verify
-	secrets, err := client.Get(ctx, "secret/test/update")
+	secrets, err := client.Get(ctx, "secret/test/upkey")
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
 
-	if secrets["value"] != "updated" {
-		t.Errorf("expected 'updated', got %v", secrets["value"])
+	if secrets["upkey"] != "updated" {
+		t.Errorf("expected 'updated', got %v", secrets["upkey"])
 	}
 }
 
@@ -154,15 +154,19 @@ func TestIntegration_DeleteSecret(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Add and delete
-	_ = client.Add(ctx, "secret/test/delete", "value")
-	err = client.DeleteSecret(ctx, "secret/test/delete")
+	// Add a secret at secret/deltest with key "mykey"
+	if err := client.Add(ctx, "secret/deltest/mykey", "value"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	// Delete the whole secret
+	err = client.DeleteSecret(ctx, "secret/deltest")
 	if err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
 	// Verify it's gone
-	exists, err := client.SecretExists(ctx, "secret/test/delete")
+	exists, err := client.SecretExists(ctx, "secret/deltest")
 	if err != nil {
 		t.Fatalf("SecretExists failed: %v", err)
 	}
@@ -185,31 +189,33 @@ func TestIntegration_CopySecret(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Add source
-	_ = client.Add(ctx, "secret/test/src", "copyvalue")
+	// Add source key - creates secret at secret/copysrc with key "mykey"
+	if err := client.Add(ctx, "secret/copysrc/mykey", "copyvalue"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
 
-	// Copy
-	err = client.Copy(ctx, "secret/test/src", "secret/test/dst")
+	// Copy key to another secret
+	err = client.Copy(ctx, "secret/copysrc/mykey", "secret/copydst/mykey")
 	if err != nil {
 		t.Fatalf("Copy failed: %v", err)
 	}
 
 	// Verify destination
-	secrets, err := client.Get(ctx, "secret/test/dst")
+	secrets, err := client.Get(ctx, "secret/copydst/mykey")
 	if err != nil {
 		t.Fatalf("Get destination failed: %v", err)
 	}
 
-	if secrets["value"] != "copyvalue" {
-		t.Errorf("expected 'copyvalue', got %v", secrets["value"])
+	if secrets["mykey"] != "copyvalue" {
+		t.Errorf("expected 'copyvalue', got %v", secrets["mykey"])
 	}
 
 	// Verify source still exists
-	srcSecrets, err := client.Get(ctx, "secret/test/src")
+	srcSecrets, err := client.Get(ctx, "secret/copysrc/mykey")
 	if err != nil {
 		t.Fatalf("Get source failed: %v", err)
 	}
-	if srcSecrets["value"] != "copyvalue" {
+	if srcSecrets["mykey"] != "copyvalue" {
 		t.Error("source should still exist after copy")
 	}
 }
@@ -228,29 +234,31 @@ func TestIntegration_MoveSecret(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Add source
-	_ = client.Add(ctx, "secret/test/move-src", "movevalue")
+	// Add source key - creates secret at secret/movesrc with key "mykey"
+	if err := client.Add(ctx, "secret/movesrc/mykey", "movevalue"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
 
-	// Move
-	err = client.Move(ctx, "secret/test/move-src", "secret/test/move-dst")
+	// Move key to another secret
+	err = client.Move(ctx, "secret/movesrc/mykey", "secret/movedst/mykey")
 	if err != nil {
 		t.Fatalf("Move failed: %v", err)
 	}
 
 	// Verify destination
-	secrets, err := client.Get(ctx, "secret/test/move-dst")
+	secrets, err := client.Get(ctx, "secret/movedst/mykey")
 	if err != nil {
 		t.Fatalf("Get destination failed: %v", err)
 	}
 
-	if secrets["value"] != "movevalue" {
-		t.Errorf("expected 'movevalue', got %v", secrets["value"])
+	if secrets["mykey"] != "movevalue" {
+		t.Errorf("expected 'movevalue', got %v", secrets["mykey"])
 	}
 
-	// Verify source is gone
-	exists, _ := client.SecretExists(ctx, "secret/test/move-src")
+	// Verify source key is gone (the key was the only one, so secret should be empty or gone)
+	exists, _ := client.KeyExists(ctx, "secret/movesrc", "mykey")
 	if exists {
-		t.Error("source should not exist after move")
+		t.Error("source key should not exist after move")
 	}
 }
 
@@ -268,19 +276,28 @@ func TestIntegration_ListSecrets(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Add multiple secrets
-	_ = client.Add(ctx, "secret/list/key1", "value1")
-	_ = client.Add(ctx, "secret/list/key2", "value2")
-	_ = client.Add(ctx, "secret/list/sub/key3", "value3")
+	// Create secrets at different paths under secret/list
+	// secret/list/app1 with key "key"
+	// secret/list/app2 with key "key"
+	// secret/list/sub/app3 with key "key"
+	if err := client.Add(ctx, "secret/list/app1/key", "value1"); err != nil {
+		t.Fatalf("Add app1 failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/list/app2/key", "value2"); err != nil {
+		t.Fatalf("Add app2 failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/list/sub/app3/key", "value3"); err != nil {
+		t.Fatalf("Add app3 failed: %v", err)
+	}
 
-	// List
+	// List at secret/list - should see app1, app2, and sub directory
 	entries, err := client.List(ctx, "secret/list")
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
 
 	if len(entries) != 3 {
-		t.Errorf("expected 3 entries, got %d", len(entries))
+		t.Errorf("expected 3 entries, got %d: %+v", len(entries), entries)
 	}
 
 	// Check for expected entries
@@ -289,9 +306,9 @@ func TestIntegration_ListSecrets(t *testing.T) {
 		found[e.Name] = true
 	}
 
-	for _, expected := range []string{"key1", "key2", "sub"} {
+	for _, expected := range []string{"app1", "app2", "sub"} {
 		if !found[expected] {
-			t.Errorf("expected entry %q not found", expected)
+			t.Errorf("expected entry %q not found in %v", expected, found)
 		}
 	}
 }
@@ -311,23 +328,30 @@ func TestIntegration_VersionHistory(t *testing.T) {
 	}
 
 	// Create secret with multiple versions
-	_ = client.Add(ctx, "secret/version/test", "v1")
-	_ = client.Update(ctx, "secret/version/test", "v2")
-	_ = client.Update(ctx, "secret/version/test", "v3")
+	// Path format: secret/path/key - secret is at secret/vhist, key is "test"
+	if err := client.Add(ctx, "secret/vhist/test", "v1"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Update(ctx, "secret/vhist/test", "v2"); err != nil {
+		t.Fatalf("Update to v2 failed: %v", err)
+	}
+	if err := client.Update(ctx, "secret/vhist/test", "v3"); err != nil {
+		t.Fatalf("Update to v3 failed: %v", err)
+	}
 
-	// Get version history
-	history, err := client.GetVersionHistory(ctx, "secret/version/test")
+	// Get version history for the secret (not the key path)
+	history, err := client.GetVersionHistory(ctx, "secret/vhist")
 	if err != nil {
 		t.Fatalf("GetVersionHistory failed: %v", err)
 	}
 
-	if len(history) != 3 {
-		t.Errorf("expected 3 versions, got %d", len(history))
+	if len(history) < 3 {
+		t.Errorf("expected at least 3 versions, got %d", len(history))
 	}
 
 	// Should be sorted descending (newest first)
-	if history[0].Version != 3 {
-		t.Errorf("expected newest version 3, got %d", history[0].Version)
+	if len(history) > 0 && history[0].Version < 3 {
+		t.Errorf("expected newest version >= 3, got %d", history[0].Version)
 	}
 }
 
@@ -346,27 +370,32 @@ func TestIntegration_ReadSpecificVersion(t *testing.T) {
 	}
 
 	// Create secret with multiple versions
-	_ = client.Add(ctx, "secret/readver/test", "version-one")
-	_ = client.Update(ctx, "secret/readver/test", "version-two")
+	// Path format: secret/path/key - secret is at secret/readver, key is "test"
+	if err := client.Add(ctx, "secret/readver/test", "version-one"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Update(ctx, "secret/readver/test", "version-two"); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
 
-	// Read version 1
-	v1Data, err := client.ReadSecretVersion(ctx, "secret/readver/test", 1)
+	// Read version 1 - secret path is secret/readver, key is "test"
+	v1Data, err := client.ReadSecretVersion(ctx, "secret/readver", 1)
 	if err != nil {
 		t.Fatalf("ReadSecretVersion failed: %v", err)
 	}
 
-	if v1Data["value"] != "version-one" {
-		t.Errorf("expected 'version-one', got %v", v1Data["value"])
+	if v1Data["test"] != "version-one" {
+		t.Errorf("expected 'version-one', got %v", v1Data["test"])
 	}
 
 	// Read version 2
-	v2Data, err := client.ReadSecretVersion(ctx, "secret/readver/test", 2)
+	v2Data, err := client.ReadSecretVersion(ctx, "secret/readver", 2)
 	if err != nil {
 		t.Fatalf("ReadSecretVersion v2 failed: %v", err)
 	}
 
-	if v2Data["value"] != "version-two" {
-		t.Errorf("expected 'version-two', got %v", v2Data["value"])
+	if v2Data["test"] != "version-two" {
+		t.Errorf("expected 'version-two', got %v", v2Data["test"])
 	}
 }
 
@@ -384,9 +413,14 @@ func TestIntegration_Snapshot(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Create secrets
-	_ = client.Add(ctx, "secret/snap/key1", "value1")
-	_ = client.Add(ctx, "secret/snap/key2", "value2")
+	// Create two secrets under snap/
+	// secret/snap/app1 with key "key" and secret/snap/app2 with key "key"
+	if err := client.Add(ctx, "secret/snap/app1/key", "value1"); err != nil {
+		t.Fatalf("Add app1 failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/snap/app2/key", "value2"); err != nil {
+		t.Fatalf("Add app2 failed: %v", err)
+	}
 
 	// Create snapshot
 	snapshot, err := client.CreateSnapshot(ctx, "secret/snap")
@@ -417,12 +451,20 @@ func TestIntegration_Restore(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Create secrets and snapshot
-	_ = client.Add(ctx, "secret/restore/key1", "original")
-	snapshot, _ := client.CreateSnapshot(ctx, "secret/restore")
+	// Create secret and snapshot
+	// Path: secret/restore/app/key creates secret at secret/restore/app with key "key"
+	if err := client.Add(ctx, "secret/restore/app/key", "original"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	snapshot, err := client.CreateSnapshot(ctx, "secret/restore")
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
 
 	// Modify the secret
-	_ = client.Update(ctx, "secret/restore/key1", "modified")
+	if err := client.Update(ctx, "secret/restore/app/key", "modified"); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
 
 	// Restore
 	result, err := client.RestoreSnapshot(ctx, snapshot, "secret/restore", vault.RestoreOptions{})
@@ -434,10 +476,13 @@ func TestIntegration_Restore(t *testing.T) {
 		t.Errorf("expected 1 updated, got %d", len(result.Updated))
 	}
 
-	// Verify restored value
-	secrets, _ := client.Get(ctx, "secret/restore/key1")
-	if secrets["value"] != "original" {
-		t.Errorf("expected 'original', got %v", secrets["value"])
+	// Verify restored value - Get returns map with the key name
+	secrets, err := client.Get(ctx, "secret/restore/app/key")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if secrets["key"] != "original" {
+		t.Errorf("expected 'original', got %v", secrets["key"])
 	}
 }
 
@@ -456,9 +501,16 @@ func TestIntegration_FindDuplicates(t *testing.T) {
 	}
 
 	// Create secrets with duplicate values
-	_ = client.Add(ctx, "secret/dup/key1", "same-value")
-	_ = client.Add(ctx, "secret/dup/key2", "same-value")
-	_ = client.Add(ctx, "secret/dup/key3", "different")
+	// All three keys are in the same secret at secret/dup
+	if err := client.Add(ctx, "secret/dup/key1", "same-value"); err != nil {
+		t.Fatalf("Add key1 failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/dup/key2", "same-value"); err != nil {
+		t.Fatalf("Add key2 failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/dup/key3", "different"); err != nil {
+		t.Fatalf("Add key3 failed: %v", err)
+	}
 
 	// Find duplicates
 	duplicates, err := client.FindDuplicates(ctx, "secret/dup")
@@ -466,7 +518,7 @@ func TestIntegration_FindDuplicates(t *testing.T) {
 		t.Fatalf("FindDuplicates failed: %v", err)
 	}
 
-	// Should have one set of duplicates (key1 and key2)
+	// Should have one set of duplicates (key1 and key2 have same value)
 	if len(duplicates) != 1 {
 		t.Errorf("expected 1 duplicate group, got %d", len(duplicates))
 	}

@@ -32,6 +32,73 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	return &Client{client: client}, nil
 }
 
+// ResolvedPath contains the result of resolving a vault path
+type ResolvedPath struct {
+	SecretPath string // The path to the secret in Vault
+	Key        string // The key within the secret (empty if whole secret)
+}
+
+// ResolvePath resolves a path to determine if it refers to a secret or a key within a secret.
+// It walks up the path trying to find an existing secret, accumulating the "key" portion.
+// For writes (add), use ParseWritePath instead since the target secret may not exist yet.
+//
+// Algorithm:
+// 1. Try reading the full path as a secret
+// 2. If not found, walk up one level, accumulate the "key" part
+// 3. Continue until secret found or path exhausted
+// 4. Return (secretPath, keyName) or (secretPath, "") if whole secret
+func (c *Client) ResolvePath(ctx context.Context, path string) (*ResolvedPath, error) {
+	mount, secretPath, _ := c.ResolveMountPath(ctx, path)
+
+	// Try the full path first
+	exists, err := c.secretExistsAtPath(ctx, mount, secretPath)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return &ResolvedPath{SecretPath: path, Key: ""}, nil
+	}
+
+	// Walk up the path, accumulating key parts
+	parts := strings.Split(secretPath, "/")
+	for i := len(parts) - 1; i > 0; i-- {
+		tryPath := strings.Join(parts[:i], "/")
+		fullTryPath := mount + "/" + tryPath
+
+		exists, err := c.secretExistsAtPath(ctx, mount, tryPath)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			key := strings.Join(parts[i:], ".")
+			return &ResolvedPath{SecretPath: fullTryPath, Key: key}, nil
+		}
+	}
+
+	// No secret found along the path
+	return nil, fmt.Errorf("no secret found at or above %s", path)
+}
+
+// ParseWritePath parses a path for write operations (add/update).
+// For writes, the parent path is the secret, and the last segment is the key.
+// e.g., "secret/myapp/db/password" → secret="secret/myapp/db", key="password"
+func ParseWritePath(path string) (secretPath, key string) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return path, ""
+	}
+	return strings.Join(parts[:len(parts)-1], "/"), parts[len(parts)-1]
+}
+
+// secretExistsAtPath checks if a secret exists at the given mount/path combination
+func (c *Client) secretExistsAtPath(ctx context.Context, mount, path string) (bool, error) {
+	secret, err := c.client.Logical().ReadWithContext(ctx, fmt.Sprintf("%s/metadata/%s", mount, path))
+	if err != nil {
+		return false, fmt.Errorf("failed to check secret at %s/%s: %w", mount, path, err)
+	}
+	return secret != nil && secret.Data != nil, nil
+}
+
 // ListSecrets recursively lists all secrets under a path and returns them as a nested map
 func (c *Client) ListSecrets(ctx context.Context, path string) (map[string]any, error) {
 	// Determine the mount and secret path
@@ -42,29 +109,21 @@ func (c *Client) ListSecrets(ctx context.Context, path string) (map[string]any, 
 		return nil, err
 	}
 
-	// Transform dot-notation keys into nested structure
+	// Transform flat secrets into nested structure
 	return expandSecrets(secrets), nil
 }
 
-// expandSecrets transforms a flat map with dot-notation keys into a nested map
-// and extracts the "value" field from secret data
+// expandSecrets transforms a flat map with secrets into a nested map
+// Secrets are stored as flat key-value maps, so we convert them to nested structure
 func expandSecrets(secrets map[string]any) map[string]any {
 	result := make(map[string]any)
 
 	for key, val := range secrets {
 		switch v := val.(type) {
 		case map[string]any:
-			// Check if this is a secret with a "value" field
-			if value, ok := v["value"]; ok && len(v) == 1 {
-				// Single "value" field - extract it and expand the key
-				setNestedValue(result, key, value)
-			} else {
-				// Nested directory - recurse
-				expanded := expandSecrets(v)
-				// Merge expanded values with dot-notation expansion
-				for k, ev := range expanded {
-					setNestedValue(result, key+"."+k, ev)
-				}
+			// This is a secret with key-value pairs - nest it
+			for k, value := range v {
+				setNestedValue(result, key+"."+k, value)
 			}
 		default:
 			setNestedValue(result, key, v)
@@ -300,37 +359,103 @@ func (c *Client) WriteSecretWithMount(ctx context.Context, mount, path string, d
 	return nil
 }
 
-// WriteSecrets writes multiple secrets from a flattened map.
-// Each key in the data map becomes a separate secret path under basePath,
-// with the value stored as {"value": val}.
+// WriteSecrets writes multiple key-value pairs to a single secret at basePath.
+// The data map contains flat key-value pairs that are stored directly in the secret.
 func (c *Client) WriteSecrets(ctx context.Context, basePath string, data map[string]any) (int, error) {
 	mount, secretPath, _ := c.ResolveMountPath(ctx, basePath)
 	return c.WriteSecretsWithMount(ctx, mount, secretPath, data)
 }
 
-// WriteSecretsWithMount writes multiple secrets with an explicit mount point.
+// WriteSecretsWithMount writes multiple key-value pairs to a single secret with an explicit mount point.
 // Use this when the mount path contains slashes (e.g., "satellite/slc").
 func (c *Client) WriteSecretsWithMount(ctx context.Context, mount, basePath string, data map[string]any) (int, error) {
-	// Sort keys for consistent ordering
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		secretPath := basePath + "/" + key
-		// Convert value to string
-		strValue := fmt.Sprintf("%v", data[key])
-		secretData := map[string]any{
-			"value": strValue,
-		}
-		if err := c.WriteSecretWithMount(ctx, mount, secretPath, secretData); err != nil {
-			return 0, err
-		}
+	// Convert all values to strings
+	secretData := make(map[string]any)
+	for k, v := range data {
+		secretData[k] = fmt.Sprintf("%v", v)
 	}
 
-	return len(keys), nil
+	if err := c.WriteSecretWithMount(ctx, mount, basePath, secretData); err != nil {
+		return 0, err
+	}
+
+	return len(secretData), nil
+}
+
+// ReadKey reads a specific key from a secret
+func (c *Client) ReadKey(ctx context.Context, secretPath, key string) (string, error) {
+	data, err := c.ReadSecretRaw(ctx, secretPath)
+	if err != nil {
+		return "", err
+	}
+	if data == nil {
+		return "", fmt.Errorf("secret not found at %s", secretPath)
+	}
+
+	value, ok := data[key]
+	if !ok {
+		return "", fmt.Errorf("key %q not found in secret at %s", key, secretPath)
+	}
+
+	return fmt.Sprintf("%v", value), nil
+}
+
+// WriteKey writes or updates a single key in a secret.
+// Creates the secret if it doesn't exist.
+func (c *Client) WriteKey(ctx context.Context, secretPath, key, value string) error {
+	// Read existing secret data (may not exist)
+	data, err := c.ReadSecretRaw(ctx, secretPath)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		data = make(map[string]any)
+	}
+
+	// Update the key
+	data[key] = value
+
+	// Write back
+	return c.WriteSecret(ctx, secretPath, data)
+}
+
+// DeleteKey removes a single key from a secret.
+// If this was the last key, deletes the entire secret.
+func (c *Client) DeleteKey(ctx context.Context, secretPath, key string) error {
+	data, err := c.ReadSecretRaw(ctx, secretPath)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		return fmt.Errorf("secret not found at %s", secretPath)
+	}
+
+	if _, exists := data[key]; !exists {
+		return fmt.Errorf("key %q not found in secret at %s", key, secretPath)
+	}
+
+	delete(data, key)
+
+	// If no keys left, delete the entire secret
+	if len(data) == 0 {
+		return c.DeleteSecret(ctx, secretPath)
+	}
+
+	// Write back the updated secret
+	return c.WriteSecret(ctx, secretPath, data)
+}
+
+// KeyExists checks if a key exists in a secret
+func (c *Client) KeyExists(ctx context.Context, secretPath, key string) (bool, error) {
+	data, err := c.ReadSecretRaw(ctx, secretPath)
+	if err != nil {
+		return false, err
+	}
+	if data == nil {
+		return false, nil
+	}
+	_, exists := data[key]
+	return exists, nil
 }
 
 // DeleteSecret deletes a secret at the given path (all versions and metadata)

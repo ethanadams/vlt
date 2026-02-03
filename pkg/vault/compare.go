@@ -218,23 +218,8 @@ func hashValue(value any) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// FlattenAndExtractValues flattens a nested map and extracts .value fields
-// When forDirectory is true, strips standalone "value" key for simple secrets
+// FlattenAndExtractValues flattens a nested map for comparison purposes
+// With grouped storage, secrets contain key-value pairs directly (no .value wrapping)
 func FlattenAndExtractValues(data map[string]any, forDirectory bool) map[string]any {
-	flattened := Flatten(data)
-	result := make(map[string]any)
-
-	for k, v := range flattened {
-		key := k
-		if forDirectory && k == "value" {
-			// Single value secret in directory context - use empty key
-			key = ""
-		} else if strings.HasSuffix(k, ".value") {
-			// Nested secret - strip .value suffix
-			key = strings.TrimSuffix(k, ".value")
-		}
-		result[key] = v
-	}
-
-	return result
+	return Flatten(data)
 }

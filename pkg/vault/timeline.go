@@ -92,14 +92,9 @@ func (c *Client) GetPrevVersions(ctx context.Context, basePath string) (map[stri
 			continue
 		}
 
-		// Flatten and extract values
-		flattened := FlattenAndExtractValues(secrets, true)
-		for k, v := range flattened {
-			if k == "" {
-				result[relPath] = v
-			} else {
-				result[relPath+"."+k] = v
-			}
+		// Add each key from the secret with path prefix
+		for k, v := range secrets {
+			result[relPath+"/"+k] = v
 		}
 	}
 
@@ -196,13 +191,9 @@ func (c *Client) GetStateAtChangesAgo(ctx context.Context, basePath string, chan
 			continue
 		}
 
-		flattened := FlattenAndExtractValues(secrets, true)
-		for k, v := range flattened {
-			if k == "" {
-				result[relPath] = v
-			} else {
-				result[relPath+"."+k] = v
-			}
+		// Add each key from the secret with path prefix
+		for k, v := range secrets {
+			result[relPath+"/"+k] = v
 		}
 	}
 

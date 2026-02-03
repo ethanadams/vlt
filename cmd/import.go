@@ -29,28 +29,35 @@ var importCmd = &cobra.Command{
 	Short: "Import secrets from a YAML file to Vault",
 	Long: `Import secrets from a YAML file to Vault KV v2.
 
-Each nested key in the YAML becomes a separate secret path.
-For example, admin.oauth2.clientID becomes vault-path/admin.oauth2.clientID
+The YAML is flattened to dot-notation keys and stored in a single secret.
+
+Example YAML structure:
+  db:
+    password: secret123
+    host: localhost
+  api:
+    key: abc123
+
+Results in a single secret at vault-path with keys:
+  db.password: secret123
+  db.host: localhost
+  api.key: abc123
 
 Example:
   vlt import secrets.yaml secret/myapp
-  # Imports all secrets from secrets.yaml to secret/myapp/*
+  # Creates secret/myapp with all keys from secrets.yaml
 
   vlt import secrets.yaml secret/myapp --dry-run
   # Preview what would be written without making changes
 
   vlt import config-secrets.yaml secret --append-name
-  # Derives name from filename: secret/config/admin.oauth2.clientID
+  # Derives name from filename: secret/config
 
   vlt import app-secrets.yaml secret/myapp --update-counterpart
-  # After import, updates app.yaml with vault refs like:
-  # admin.password: ref+vault://secret/myapp/admin.password#value
+  # After import, updates app.yaml with vault refs
 
   vlt import --sops app-secrets.enc.yaml secret/myapp
-  # Decrypt SOPS-encrypted file before importing
-
-  vlt import --sops --append-name app-secrets.enc.yaml satellite/slc
-  # Mount is auto-detected (works with nested mounts like satellite/slc)`,
+  # Decrypt SOPS-encrypted file before importing`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runImport(cmd.Context(), args[0], args[1])
@@ -99,24 +106,22 @@ func runImport(ctx context.Context, yamlFile, vaultPath string) error {
 		vaultPath = vaultPath + "/" + name
 	}
 
-	// Flatten nested structure
-	flattened := vault.Flatten(data)
-
-	// Sort keys for consistent output
-	keys := make([]string, 0, len(flattened))
-	for k := range flattened {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	// Build full path (mount override + vault path)
 	fullPath := vaultPath
 	if importMount != "" {
 		fullPath = importMount + "/" + vaultPath
 	}
 
+	// Flatten for counterpart update (uses dot-notation paths)
+	flattened := vault.Flatten(data)
+	keys := make([]string, 0, len(flattened))
+	for k := range flattened {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	if importDryRun {
-		printImportDryRun(fullPath, flattened, keys)
+		printImportDryRun(fullPath, data)
 		if importUpdateCounterpart {
 			printCounterpartDryRun(yamlFile, fullPath, keys)
 		}
@@ -140,7 +145,7 @@ func runImport(ctx context.Context, yamlFile, vaultPath string) error {
 		return err
 	}
 
-	fmt.Printf("Successfully wrote %d secrets to %s/*\n", count, fullPath)
+	fmt.Printf("Successfully wrote %d keys to %s\n", count, fullPath)
 
 	// Update counterpart file if requested
 	if importUpdateCounterpart {
@@ -160,18 +165,27 @@ func runImport(ctx context.Context, yamlFile, vaultPath string) error {
 	return nil
 }
 
-func printImportDryRun(path string, data map[string]any, keys []string) {
-	fmt.Printf("[dry-run] Would write to Vault path: %s\n", path)
-	fmt.Printf("[dry-run] %d secrets:\n", len(data))
+func printImportDryRun(path string, data map[string]any) {
+	// Flatten the data to show what will actually be written
+	flattened := vault.Flatten(data)
+
+	// Sort keys for consistent output
+	keys := make([]string, 0, len(flattened))
+	for k := range flattened {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	fmt.Printf("[dry-run] Would write to Vault secret: %s\n", path)
+	fmt.Printf("[dry-run] %d keys:\n", len(keys))
 
 	for _, k := range keys {
-		v := data[k]
-		// Mask values, show only type/length for security
+		v := flattened[k]
 		switch val := v.(type) {
 		case string:
-			fmt.Printf("  %s/%s = <string, %d chars>\n", path, k, len(val))
+			fmt.Printf("  %s = <string, %d chars>\n", k, len(val))
 		default:
-			fmt.Printf("  %s/%s = <%T>\n", path, k, v)
+			fmt.Printf("  %s = <%T>\n", k, v)
 		}
 	}
 }

@@ -11,13 +11,17 @@ import (
 
 var updateCmd = &cobra.Command{
 	Use:   "update <path> [value]",
-	Short: "Update a secret at a path",
-	Long: `Update an existing secret at the given path.
+	Short: "Update a key in a secret",
+	Long: `Update an existing key in a secret.
+
+The path format is: secret/path/key
+The path is resolved to find the secret and key.
 
 The value can be provided as an argument or piped via stdin.
 
 Example:
-  vlt update secret/myapp/apiKey "new-secret-value"
+  vlt update secret/myapp/db/password "new-secret-value"
+  # Updates key "password" in secret at secret/myapp/db
 
   cat credentials.json | vlt update secret/myapp/gcp_sa -`,
 	Args: cobra.RangeArgs(1, 2),
@@ -46,9 +50,9 @@ func runUpdate(ctx context.Context, path, value string) error {
 	}
 
 	if err := client.Update(ctx, path, value); err != nil {
-		return fmt.Errorf("%w (use 'add' to create new secrets)", err)
+		return fmt.Errorf("%w (use 'add' to create new keys)", err)
 	}
 
-	fmt.Printf("Updated secret at %s\n", path)
+	fmt.Printf("Updated %s\n", path)
 	return nil
 }

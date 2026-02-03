@@ -56,17 +56,28 @@ func runHistory(ctx context.Context, path string) error {
 		return err
 	}
 
-	// Check if path is a directory or single secret
+	// Try to resolve the path to a secret
+	resolved, err := client.ResolvePath(ctx, path)
+	if err == nil {
+		if resolved.Key != "" {
+			// Path resolves to a key - show history for the whole secret
+			fmt.Printf("Note: showing history for secret %s (history is per-secret, not per-key)\n\n", resolved.SecretPath)
+			return showSecretHistory(ctx, client, resolved.SecretPath)
+		}
+		return showSecretHistory(ctx, client, resolved.SecretPath)
+	}
+
+	// Path didn't resolve - check if it's a directory
 	isDir, err := client.IsDirectory(ctx, path)
 	if err != nil {
-		// If error, might be a single secret - try that first
-		isDir = false
+		return fmt.Errorf("path not found: %s", path)
 	}
 
 	if isDir {
 		return showDirectoryHistory(ctx, client, path)
 	}
-	return showSecretHistory(ctx, client, path)
+
+	return fmt.Errorf("no secret or directory found at %s", path)
 }
 
 func showSecretHistory(ctx context.Context, client *vault.Client, path string) error {
