@@ -486,6 +486,766 @@ func TestIntegration_Restore(t *testing.T) {
 	}
 }
 
+func TestIntegration_FindKeys(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create secrets:
+	// secret/find/app with keys: password, port, host
+	// secret/find/sub/db with keys: password, connection_string
+	if err := client.Add(ctx, "secret/find/app/password", "secret123"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/find/app/port", "5432"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/find/app/host", "localhost"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/find/sub/db/password", "dbpass"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/find/sub/db/connection_string", "postgres://..."); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	t.Run("non-recursive finds at immediate level", func(t *testing.T) {
+		results, err := client.FindKeys(ctx, "secret/find", "p*", false)
+		if err != nil {
+			t.Fatalf("FindKeys failed: %v", err)
+		}
+
+		// Should find password and port in secret/find/app only (not nested sub/db)
+		if len(results) != 2 {
+			t.Errorf("expected 2 results, got %d: %+v", len(results), results)
+		}
+	})
+
+	t.Run("recursive finds in nested secrets", func(t *testing.T) {
+		results, err := client.FindKeys(ctx, "secret/find", "password", true)
+		if err != nil {
+			t.Fatalf("FindKeys failed: %v", err)
+		}
+
+		// Should find password in both app and sub/db
+		if len(results) != 2 {
+			t.Errorf("expected 2 results, got %d: %+v", len(results), results)
+		}
+	})
+
+	t.Run("wildcard pattern", func(t *testing.T) {
+		results, err := client.FindKeys(ctx, "secret/find", "*", true)
+		if err != nil {
+			t.Fatalf("FindKeys failed: %v", err)
+		}
+
+		// Should find all 5 keys
+		if len(results) != 5 {
+			t.Errorf("expected 5 results, got %d: %+v", len(results), results)
+		}
+	})
+
+	t.Run("question mark glob", func(t *testing.T) {
+		results, err := client.FindKeys(ctx, "secret/find", "por?", true)
+		if err != nil {
+			t.Fatalf("FindKeys failed: %v", err)
+		}
+
+		if len(results) != 1 {
+			t.Errorf("expected 1 result, got %d: %+v", len(results), results)
+		}
+		if len(results) > 0 && results[0].Key != "port" {
+			t.Errorf("expected key 'port', got %q", results[0].Key)
+		}
+	})
+
+	t.Run("no match returns empty", func(t *testing.T) {
+		results, err := client.FindKeys(ctx, "secret/find", "nonexistent*", true)
+		if err != nil {
+			t.Fatalf("FindKeys failed: %v", err)
+		}
+
+		if len(results) != 0 {
+			t.Errorf("expected 0 results, got %d", len(results))
+		}
+	})
+
+	t.Run("find on single secret path", func(t *testing.T) {
+		results, err := client.FindKeys(ctx, "secret/find/app", "h*", false)
+		if err != nil {
+			t.Fatalf("FindKeys failed: %v", err)
+		}
+
+		if len(results) != 1 {
+			t.Errorf("expected 1 result, got %d: %+v", len(results), results)
+		}
+		if len(results) > 0 && results[0].Key != "host" {
+			t.Errorf("expected key 'host', got %q", results[0].Key)
+		}
+	})
+}
+
+func TestIntegration_KeyOperations(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	t.Run("WriteKey creates key in new secret", func(t *testing.T) {
+		err := client.WriteKey(ctx, "secret/keyops", "mykey", "myvalue")
+		if err != nil {
+			t.Fatalf("WriteKey failed: %v", err)
+		}
+
+		val, err := client.ReadKey(ctx, "secret/keyops", "mykey")
+		if err != nil {
+			t.Fatalf("ReadKey failed: %v", err)
+		}
+		if val != "myvalue" {
+			t.Errorf("expected 'myvalue', got %q", val)
+		}
+	})
+
+	t.Run("WriteKey updates existing key", func(t *testing.T) {
+		err := client.WriteKey(ctx, "secret/keyops", "mykey", "updated")
+		if err != nil {
+			t.Fatalf("WriteKey failed: %v", err)
+		}
+
+		val, err := client.ReadKey(ctx, "secret/keyops", "mykey")
+		if err != nil {
+			t.Fatalf("ReadKey failed: %v", err)
+		}
+		if val != "updated" {
+			t.Errorf("expected 'updated', got %q", val)
+		}
+	})
+
+	t.Run("WriteKey adds second key to same secret", func(t *testing.T) {
+		err := client.WriteKey(ctx, "secret/keyops", "second", "val2")
+		if err != nil {
+			t.Fatalf("WriteKey failed: %v", err)
+		}
+
+		// Both keys should exist
+		val1, err := client.ReadKey(ctx, "secret/keyops", "mykey")
+		if err != nil {
+			t.Fatalf("ReadKey mykey failed: %v", err)
+		}
+		if val1 != "updated" {
+			t.Errorf("expected 'updated', got %q", val1)
+		}
+
+		val2, err := client.ReadKey(ctx, "secret/keyops", "second")
+		if err != nil {
+			t.Fatalf("ReadKey second failed: %v", err)
+		}
+		if val2 != "val2" {
+			t.Errorf("expected 'val2', got %q", val2)
+		}
+	})
+
+	t.Run("KeyExists returns true for existing key", func(t *testing.T) {
+		exists, err := client.KeyExists(ctx, "secret/keyops", "mykey")
+		if err != nil {
+			t.Fatalf("KeyExists failed: %v", err)
+		}
+		if !exists {
+			t.Error("expected key to exist")
+		}
+	})
+
+	t.Run("KeyExists returns false for non-existing key", func(t *testing.T) {
+		exists, err := client.KeyExists(ctx, "secret/keyops", "nonexistent")
+		if err != nil {
+			t.Fatalf("KeyExists failed: %v", err)
+		}
+		if exists {
+			t.Error("expected key not to exist")
+		}
+	})
+
+	t.Run("DeleteKey removes one key, leaves others", func(t *testing.T) {
+		err := client.DeleteKey(ctx, "secret/keyops", "second")
+		if err != nil {
+			t.Fatalf("DeleteKey failed: %v", err)
+		}
+
+		// second should be gone
+		exists, err := client.KeyExists(ctx, "secret/keyops", "second")
+		if err != nil {
+			t.Fatalf("KeyExists failed: %v", err)
+		}
+		if exists {
+			t.Error("expected 'second' key to be deleted")
+		}
+
+		// mykey should still exist
+		exists, err = client.KeyExists(ctx, "secret/keyops", "mykey")
+		if err != nil {
+			t.Fatalf("KeyExists failed: %v", err)
+		}
+		if !exists {
+			t.Error("expected 'mykey' to still exist")
+		}
+	})
+
+	t.Run("DeleteKey on last key deletes the secret", func(t *testing.T) {
+		err := client.DeleteKey(ctx, "secret/keyops", "mykey")
+		if err != nil {
+			t.Fatalf("DeleteKey failed: %v", err)
+		}
+
+		exists, err := client.SecretExists(ctx, "secret/keyops")
+		if err != nil {
+			t.Fatalf("SecretExists failed: %v", err)
+		}
+		if exists {
+			t.Error("expected secret to be deleted when last key removed")
+		}
+	})
+}
+
+func TestIntegration_ImportExport(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	t.Run("Import nested data, verify flattened keys", func(t *testing.T) {
+		data := map[string]any{
+			"admin": map[string]any{
+				"password": "secret123",
+				"username": "admin",
+			},
+			"db": map[string]any{
+				"host": "localhost",
+				"port": "5432",
+			},
+		}
+
+		count, err := client.Import(ctx, "secret/impexp", data)
+		if err != nil {
+			t.Fatalf("Import failed: %v", err)
+		}
+		if count != 4 {
+			t.Errorf("expected 4 keys imported, got %d", count)
+		}
+
+		// Verify flattened keys exist
+		raw, err := client.ReadSecretRaw(ctx, "secret/impexp")
+		if err != nil {
+			t.Fatalf("ReadSecretRaw failed: %v", err)
+		}
+		if raw["admin.password"] != "secret123" {
+			t.Errorf("expected admin.password='secret123', got %v", raw["admin.password"])
+		}
+		if raw["db.host"] != "localhost" {
+			t.Errorf("expected db.host='localhost', got %v", raw["db.host"])
+		}
+	})
+
+	t.Run("Export returns correct nested structure", func(t *testing.T) {
+		exported, err := client.Export(ctx, "secret/impexp")
+		if err != nil {
+			t.Fatalf("Export failed: %v", err)
+		}
+
+		// Export uses ListSecrets which expands to nested structure
+		if exported == nil {
+			t.Fatal("expected non-nil export result")
+		}
+
+		// The exported structure should have the nested keys
+		admin, ok := exported["admin"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected admin to be a map, got %T", exported["admin"])
+		}
+		if admin["password"] != "secret123" {
+			t.Errorf("expected admin.password='secret123', got %v", admin["password"])
+		}
+	})
+
+	t.Run("Round-trip: import then export preserves data", func(t *testing.T) {
+		data := map[string]any{
+			"api": map[string]any{
+				"key":      "abc123",
+				"endpoint": "https://api.example.com",
+			},
+		}
+
+		_, err := client.Import(ctx, "secret/roundtrip", data)
+		if err != nil {
+			t.Fatalf("Import failed: %v", err)
+		}
+
+		exported, err := client.Export(ctx, "secret/roundtrip")
+		if err != nil {
+			t.Fatalf("Export failed: %v", err)
+		}
+
+		api, ok := exported["api"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected api to be a map, got %T", exported["api"])
+		}
+		if api["key"] != "abc123" {
+			t.Errorf("expected api.key='abc123', got %v", api["key"])
+		}
+		if api["endpoint"] != "https://api.example.com" {
+			t.Errorf("expected api.endpoint correct, got %v", api["endpoint"])
+		}
+	})
+}
+
+func TestIntegration_DeleteRecursive(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create nested structure
+	if err := client.Add(ctx, "secret/delrec/app/key", "v1"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/delrec/sub/a/key", "v2"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/delrec/sub/b/key", "v3"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	result, err := client.DeleteRecursive(ctx, "secret/delrec")
+	if err != nil {
+		t.Fatalf("DeleteRecursive failed: %v", err)
+	}
+
+	if result.Count != 3 {
+		t.Errorf("expected 3 deleted, got %d", result.Count)
+	}
+
+	// Verify all are gone
+	for _, path := range []string{"secret/delrec/app", "secret/delrec/sub/a", "secret/delrec/sub/b"} {
+		exists, err := client.SecretExists(ctx, path)
+		if err != nil {
+			t.Fatalf("SecretExists(%s) failed: %v", path, err)
+		}
+		if exists {
+			t.Errorf("expected %s to be deleted", path)
+		}
+	}
+}
+
+func TestIntegration_CopyRecursive(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create source secrets
+	if err := client.Add(ctx, "secret/cprecur/a/key", "val-a"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/cprecur/b/key", "val-b"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	count, err := client.CopyRecursive(ctx, "secret/cprecur", "secret/cprecur-dst")
+	if err != nil {
+		t.Fatalf("CopyRecursive failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 copied, got %d", count)
+	}
+
+	// Verify destination has both secrets
+	dstA, err := client.ReadSecretRaw(ctx, "secret/cprecur-dst/a")
+	if err != nil {
+		t.Fatalf("ReadSecretRaw dst/a failed: %v", err)
+	}
+	if dstA["key"] != "val-a" {
+		t.Errorf("expected dst/a key='val-a', got %v", dstA["key"])
+	}
+
+	dstB, err := client.ReadSecretRaw(ctx, "secret/cprecur-dst/b")
+	if err != nil {
+		t.Fatalf("ReadSecretRaw dst/b failed: %v", err)
+	}
+	if dstB["key"] != "val-b" {
+		t.Errorf("expected dst/b key='val-b', got %v", dstB["key"])
+	}
+
+	// Verify source still exists
+	srcA, err := client.ReadSecretRaw(ctx, "secret/cprecur/a")
+	if err != nil {
+		t.Fatalf("ReadSecretRaw src/a failed: %v", err)
+	}
+	if srcA["key"] != "val-a" {
+		t.Errorf("source should still exist after copy")
+	}
+}
+
+func TestIntegration_MoveRecursive(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create source secrets
+	if err := client.Add(ctx, "secret/mvrecur/x/key", "val-x"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/mvrecur/y/key", "val-y"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	count, err := client.MoveRecursive(ctx, "secret/mvrecur", "secret/mvrecur-dst")
+	if err != nil {
+		t.Fatalf("MoveRecursive failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 moved, got %d", count)
+	}
+
+	// Verify destination exists
+	dstX, err := client.ReadSecretRaw(ctx, "secret/mvrecur-dst/x")
+	if err != nil {
+		t.Fatalf("ReadSecretRaw dst/x failed: %v", err)
+	}
+	if dstX["key"] != "val-x" {
+		t.Errorf("expected dst/x key='val-x', got %v", dstX["key"])
+	}
+
+	// Verify source is gone
+	exists, err := client.SecretExists(ctx, "secret/mvrecur/x")
+	if err != nil {
+		t.Fatalf("SecretExists failed: %v", err)
+	}
+	if exists {
+		t.Error("source should not exist after move")
+	}
+
+	exists, err = client.SecretExists(ctx, "secret/mvrecur/y")
+	if err != nil {
+		t.Fatalf("SecretExists failed: %v", err)
+	}
+	if exists {
+		t.Error("source y should not exist after move")
+	}
+}
+
+func TestIntegration_CompareVersions(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create secret at secret/cmpver with keys: keep, change, remove
+	if err := client.WriteSecret(ctx, "secret/cmpver", map[string]any{
+		"keep":   "same",
+		"change": "old",
+		"remove": "gone",
+	}); err != nil {
+		t.Fatalf("WriteSecret v1 failed: %v", err)
+	}
+
+	// Update: modify "change", delete "remove", add "added"
+	if err := client.WriteSecret(ctx, "secret/cmpver", map[string]any{
+		"keep":   "same",
+		"change": "new",
+		"added":  "fresh",
+	}); err != nil {
+		t.Fatalf("WriteSecret v2 failed: %v", err)
+	}
+
+	changes, err := client.CompareVersions(ctx, "secret/cmpver", 1, 2)
+	if err != nil {
+		t.Fatalf("CompareVersions failed: %v", err)
+	}
+
+	// Should have: 1 added (added), 1 modified (change), 1 deleted (remove)
+	var added, modified, deleted int
+	for _, c := range changes {
+		switch c.Type {
+		case vault.ChangeAdded:
+			added++
+			if c.Key != "added" {
+				t.Errorf("unexpected added key: %q", c.Key)
+			}
+		case vault.ChangeModified:
+			modified++
+			if c.Key != "change" {
+				t.Errorf("unexpected modified key: %q", c.Key)
+			}
+			if c.OldValue != "old" || c.NewValue != "new" {
+				t.Errorf("unexpected values: old=%q new=%q", c.OldValue, c.NewValue)
+			}
+		case vault.ChangeDeleted:
+			deleted++
+			if c.Key != "remove" {
+				t.Errorf("unexpected deleted key: %q", c.Key)
+			}
+		}
+	}
+
+	if added != 1 {
+		t.Errorf("expected 1 added, got %d", added)
+	}
+	if modified != 1 {
+		t.Errorf("expected 1 modified, got %d", modified)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
+	}
+}
+
+func TestIntegration_Timeline(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create secrets with multiple versions under secret/timeline
+	if err := client.Add(ctx, "secret/timeline/app/config", "v1"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/timeline/db/password", "v1"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	// Update to create v2 for each
+	if err := client.Update(ctx, "secret/timeline/app/config", "v2"); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+	if err := client.Update(ctx, "secret/timeline/db/password", "v2"); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	t.Run("GetTimeline returns chronological changes", func(t *testing.T) {
+		timeline, err := client.GetTimeline(ctx, "secret/timeline")
+		if err != nil {
+			t.Fatalf("GetTimeline failed: %v", err)
+		}
+
+		// Should have 4 entries total (2 secrets x 2 versions each)
+		if len(timeline) != 4 {
+			t.Errorf("expected 4 timeline entries, got %d", len(timeline))
+		}
+
+		// Verify sorted newest first
+		for i := 1; i < len(timeline); i++ {
+			if timeline[i].Time.After(timeline[i-1].Time) {
+				t.Errorf("timeline not sorted descending at index %d", i)
+			}
+		}
+	})
+
+	t.Run("GetPrevVersions returns previous version of each secret", func(t *testing.T) {
+		prevVersions, err := client.GetPrevVersions(ctx, "secret/timeline")
+		if err != nil {
+			t.Fatalf("GetPrevVersions failed: %v", err)
+		}
+
+		// Should have 2 entries (one per secret, each showing previous version)
+		if len(prevVersions) != 2 {
+			t.Errorf("expected 2 prev version entries, got %d", len(prevVersions))
+		}
+
+		// Both should have value "v1" (previous version)
+		for key, val := range prevVersions {
+			if val != "v1" {
+				t.Errorf("expected prev version value 'v1' for %s, got %v", key, val)
+			}
+		}
+	})
+
+	t.Run("GetStateAtChangesAgo computes correct historical state", func(t *testing.T) {
+		// 1 change ago should undo the most recent change
+		state, err := client.GetStateAtChangesAgo(ctx, "secret/timeline", 1)
+		if err != nil {
+			t.Fatalf("GetStateAtChangesAgo failed: %v", err)
+		}
+
+		if state == nil {
+			t.Fatal("expected non-nil state")
+		}
+
+		// At least one secret should still be at v1
+		hasV1 := false
+		for _, val := range state {
+			if val == "v1" {
+				hasV1 = true
+			}
+		}
+		if !hasV1 {
+			t.Error("expected at least one secret to be at v1 state")
+		}
+	})
+
+	t.Run("GetSecretAtVersion reads specific version", func(t *testing.T) {
+		secrets, err := client.GetSecretAtVersion(ctx, "secret/timeline/app", 1, false)
+		if err != nil {
+			t.Fatalf("GetSecretAtVersion failed: %v", err)
+		}
+
+		if secrets["config"] != "v1" {
+			t.Errorf("expected config='v1', got %v", secrets["config"])
+		}
+	})
+
+	t.Run("GetSecretAtVersion with isPrev", func(t *testing.T) {
+		secrets, err := client.GetSecretAtVersion(ctx, "secret/timeline/app", 0, true)
+		if err != nil {
+			t.Fatalf("GetSecretAtVersion isPrev failed: %v", err)
+		}
+
+		if secrets["config"] != "v1" {
+			t.Errorf("expected config='v1' for previous, got %v", secrets["config"])
+		}
+	})
+}
+
+func TestIntegration_Tree(t *testing.T) {
+	ctx := context.Background()
+
+	container, err := setupVault(ctx)
+	if err != nil {
+		t.Fatalf("failed to setup vault: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	client, err := newTestClient(container.URI)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Create tree structure:
+	// secret/tree/
+	//   config  (secret with key "val")
+	//   sub/
+	//     app   (secret with key "val")
+	//     db    (secret with key "val")
+	if err := client.Add(ctx, "secret/tree/config/val", "cfg"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/tree/sub/app/val", "app-val"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if err := client.Add(ctx, "secret/tree/sub/db/val", "db-val"); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+
+	t.Run("GetTree builds correct structure", func(t *testing.T) {
+		tree, err := client.GetTree(ctx, "secret/tree")
+		if err != nil {
+			t.Fatalf("GetTree failed: %v", err)
+		}
+
+		if tree == nil {
+			t.Fatal("expected non-nil tree")
+		}
+
+		// Root should be a directory
+		if !tree.IsDir {
+			t.Error("root should be a directory")
+		}
+
+		// Count secrets and dirs
+		if tree.CountSecrets() != 3 {
+			t.Errorf("expected 3 secrets, got %d", tree.CountSecrets())
+		}
+		if tree.CountDirs() != 1 {
+			t.Errorf("expected 1 directory (sub), got %d", tree.CountDirs())
+		}
+	})
+
+	t.Run("GetTreeWithMetadata includes version info", func(t *testing.T) {
+		tree, err := client.GetTreeWithMetadata(ctx, "secret/tree")
+		if err != nil {
+			t.Fatalf("GetTreeWithMetadata failed: %v", err)
+		}
+
+		// Walk the tree and check that leaf nodes have metadata
+		hasMetadata := false
+		tree.Walk(func(node *vault.TreeNode, depth int, isLast bool) {
+			if !node.IsDir && node.Metadata != nil {
+				hasMetadata = true
+				if node.Metadata.CurrentVersion < 1 {
+					t.Errorf("expected version >= 1, got %d for %s", node.Metadata.CurrentVersion, node.Name)
+				}
+			}
+		})
+
+		if !hasMetadata {
+			t.Error("expected at least one leaf with metadata")
+		}
+	})
+}
+
 func TestIntegration_FindDuplicates(t *testing.T) {
 	ctx := context.Background()
 

@@ -92,9 +92,9 @@ func (c *Client) GetPrevVersions(ctx context.Context, basePath string) (map[stri
 			continue
 		}
 
-		// Add each key from the secret with path prefix
+		// Add each key from the secret with path prefix (dot notation to match Flatten)
 		for k, v := range secrets {
-			result[relPath+"/"+k] = v
+			result[relPath+"."+k] = v
 		}
 	}
 
@@ -191,9 +191,9 @@ func (c *Client) GetStateAtChangesAgo(ctx context.Context, basePath string, chan
 			continue
 		}
 
-		// Add each key from the secret with path prefix
+		// Add each key from the secret with path prefix (dot notation to match Flatten)
 		for k, v := range secrets {
-			result[relPath+"/"+k] = v
+			result[relPath+"."+k] = v
 		}
 	}
 
