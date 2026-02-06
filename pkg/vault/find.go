@@ -104,35 +104,22 @@ func (c *Client) findKeysRecursive(ctx context.Context, basePath, pattern string
 
 	if len(data) > 0 {
 		matchKeys(basePath, data, pattern, results)
+		return nil
 	}
 
-	// List at this level
-	dirs, hasSecrets, err := c.ListDirectories(ctx, basePath)
+	// ListSecretPaths is already recursive — returns all secret paths under basePath
+	paths, err := c.ListSecretPaths(ctx, basePath)
 	if err != nil {
 		return err
 	}
 
-	if hasSecrets {
-		paths, err := c.ListSecretPaths(ctx, basePath)
+	for _, p := range paths {
+		secretPath := basePath + "/" + p
+		secretData, err := c.ReadSecretRaw(ctx, secretPath)
 		if err != nil {
 			return err
 		}
-
-		for _, p := range paths {
-			secretPath := basePath + "/" + p
-			secretData, err := c.ReadSecretRaw(ctx, secretPath)
-			if err != nil {
-				return err
-			}
-			matchKeys(secretPath, secretData, pattern, results)
-		}
-	}
-
-	// Recurse into subdirectories
-	for _, dir := range dirs {
-		if err := c.findKeysRecursive(ctx, basePath+"/"+dir, pattern, results); err != nil {
-			return err
-		}
+		matchKeys(secretPath, secretData, pattern, results)
 	}
 
 	return nil
