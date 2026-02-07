@@ -46,6 +46,8 @@ func init() {
 }
 
 func runRestore(ctx context.Context, snapshotFile, targetPath string) error {
+	initColor()
+
 	// Load snapshot
 	snapshot, err := LoadSnapshot(snapshotFile)
 	if err != nil {
@@ -92,7 +94,7 @@ func printRestoreResult(result *vault.RestoreResult, dryRun bool) {
 		fmt.Printf("Added (%d):\n", len(result.Added))
 		sort.Strings(result.Added)
 		for _, p := range result.Added {
-			fmt.Printf("  + %s\n", p)
+			fmt.Printf("  %s %s\n", colorGreen("+"), p)
 		}
 		fmt.Println()
 	}
@@ -101,7 +103,7 @@ func printRestoreResult(result *vault.RestoreResult, dryRun bool) {
 		fmt.Printf("Updated (%d):\n", len(result.Updated))
 		sort.Strings(result.Updated)
 		for _, p := range result.Updated {
-			fmt.Printf("  ~ %s\n", p)
+			fmt.Printf("  %s %s\n", colorYellow("~"), p)
 		}
 		fmt.Println()
 	}
@@ -110,7 +112,7 @@ func printRestoreResult(result *vault.RestoreResult, dryRun bool) {
 		fmt.Printf("Deleted (%d):\n", len(result.Deleted))
 		sort.Strings(result.Deleted)
 		for _, p := range result.Deleted {
-			fmt.Printf("  - %s\n", p)
+			fmt.Printf("  %s %s\n", colorRed("-"), p)
 		}
 		fmt.Println()
 	}
@@ -119,7 +121,7 @@ func printRestoreResult(result *vault.RestoreResult, dryRun bool) {
 		fmt.Printf("Skipped (version mismatch) (%d):\n", len(result.Skipped))
 		sort.Strings(result.Skipped)
 		for _, p := range result.Skipped {
-			fmt.Printf("  ! %s\n", p)
+			fmt.Printf("  %s %s\n", colorYellow("!"), p)
 		}
 		fmt.Println()
 	}

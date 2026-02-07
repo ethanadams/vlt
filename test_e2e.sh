@@ -834,6 +834,396 @@ else
 fi
 
 # =============================================================================
+# ROLLBACK COMMAND
+# =============================================================================
+log "Testing rollback command..."
+
+# rollback: to previous version
+./vlt add secret/e2e/rb/config "original" 2>/dev/null
+./vlt update secret/e2e/rb/config "modified" 2>/dev/null
+if ./vlt rollback secret/e2e/rb/config 2>/dev/null; then
+    output=$(./vlt get secret/e2e/rb/config value 2>/dev/null)
+    if [[ "$output" == "original" ]]; then
+        pass "rollback: to previous version"
+    else
+        fail "rollback: value not restored (got: $output)"
+    fi
+else
+    fail "rollback: command failed"
+fi
+
+# rollback: to specific version
+./vlt add secret/e2e/rb-ver/key "v1" 2>/dev/null
+./vlt update secret/e2e/rb-ver/key "v2" 2>/dev/null
+./vlt update secret/e2e/rb-ver/key "v3" 2>/dev/null
+if ./vlt rollback secret/e2e/rb-ver 1 2>/dev/null; then
+    output=$(./vlt get secret/e2e/rb-ver/key 2>/dev/null)
+    if [[ "$output" == *"v1"* ]]; then
+        pass "rollback: to specific version"
+    else
+        fail "rollback: specific version not restored (got: $output)"
+    fi
+else
+    fail "rollback: specific version failed"
+fi
+
+# rollback --dry-run
+./vlt add secret/e2e/rb-dry/key "original" 2>/dev/null
+./vlt update secret/e2e/rb-dry/key "changed" 2>/dev/null
+output=$(./vlt rollback --dry-run secret/e2e/rb-dry 2>&1)
+if [[ "$output" == *"dry-run"* ]]; then
+    # Verify value was NOT changed
+    current=$(./vlt get secret/e2e/rb-dry/key 2>/dev/null)
+    if [[ "$current" == *"changed"* ]]; then
+        pass "rollback --dry-run: preview without applying"
+    else
+        fail "rollback --dry-run: value was changed"
+    fi
+else
+    fail "rollback --dry-run (got: $output)"
+fi
+
+# rollback -r: recursive
+./vlt add secret/e2e/rb-rec/app1/key "a-v1" 2>/dev/null
+./vlt add secret/e2e/rb-rec/app2/key "b-v1" 2>/dev/null
+./vlt update secret/e2e/rb-rec/app1/key "a-v2" 2>/dev/null
+./vlt update secret/e2e/rb-rec/app2/key "b-v2" 2>/dev/null
+if ./vlt rollback -r secret/e2e/rb-rec 2>/dev/null; then
+    a_val=$(./vlt get secret/e2e/rb-rec/app1/key 2>/dev/null)
+    b_val=$(./vlt get secret/e2e/rb-rec/app2/key 2>/dev/null)
+    if [[ "$a_val" == *"a-v1"* ]] && [[ "$b_val" == *"b-v1"* ]]; then
+        pass "rollback -r: recursive rollback"
+    else
+        fail "rollback -r: values not restored (a=$a_val, b=$b_val)"
+    fi
+else
+    fail "rollback -r: command failed"
+fi
+
+# rollback: error on v1
+./vlt add secret/e2e/rb-v1/key "only-version" 2>/dev/null
+output=$(./vlt rollback secret/e2e/rb-v1 2>&1) || true
+if [[ "$output" == *"no previous version"* ]] || [[ "$output" == *"version is 1"* ]]; then
+    pass "rollback: error on v1 secret"
+else
+    fail "rollback: v1 error (got: $output)"
+fi
+
+# =============================================================================
+# VERSION AND COMPLETION COMMANDS
+# =============================================================================
+log "Testing version and completion commands..."
+
+# version command
+output=$(./vlt version 2>&1)
+if [[ "$output" == *"vlt"* ]] && [[ "$output" == *"commit"* ]]; then
+    pass "version: shows version info"
+else
+    fail "version (got: $output)"
+fi
+
+# completion bash
+output=$(./vlt completion bash 2>&1)
+if [[ "$output" == *"bash"* ]] || [[ "$output" == *"complete"* ]] || [[ "$output" == *"__vlt"* ]]; then
+    pass "completion bash: generates script"
+else
+    fail "completion bash (got first 100 chars: ${output:0:100})"
+fi
+
+# =============================================================================
+# JSON OUTPUT
+# =============================================================================
+log "Testing --output json..."
+
+# Setup data for output tests
+./vlt add secret/e2e/out-test/mykey "myvalue" 2>/dev/null
+./vlt add secret/e2e/out-test/other "otherval" 2>/dev/null
+./vlt update secret/e2e/out-test/mykey "myvalue-v2" 2>/dev/null
+
+# get: single key as JSON
+output=$(./vlt --output json get secret/e2e/out-test/mykey 2>&1)
+if echo "$output" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'mykey' in d" 2>/dev/null; then
+    pass "get --output json: single key returns JSON object with key"
+else
+    fail "get --output json: single key (got: $output)"
+fi
+
+# get: whole secret as JSON
+output=$(./vlt --output json get secret/e2e/out-test 2>&1)
+if echo "$output" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'mykey' in d and 'other' in d" 2>/dev/null; then
+    pass "get --output json: secret returns all keys"
+else
+    fail "get --output json: secret (got: $output)"
+fi
+
+# ls: JSON output with type field
+output=$(./vlt --output json ls secret/e2e 2>&1)
+if echo "$output" | python3 -c "
+import sys,json
+data=json.load(sys.stdin)
+assert isinstance(data, list)
+assert any(e.get('name') == 'out-test' for e in data)
+assert all('type' in e for e in data)
+" 2>/dev/null; then
+    pass "ls --output json: array with name and type fields"
+else
+    fail "ls --output json (got: $output)"
+fi
+
+# ls -l: JSON includes metadata
+output=$(./vlt --output json ls -l secret/e2e 2>&1)
+if echo "$output" | python3 -c "
+import sys,json
+data=json.load(sys.stdin)
+secrets=[e for e in data if e.get('type')=='secret']
+assert len(secrets) > 0
+assert any(e.get('version',0) > 0 for e in secrets)
+" 2>/dev/null; then
+    pass "ls -l --output json: includes version metadata"
+else
+    fail "ls -l --output json (got: $output)"
+fi
+
+# diff: JSON output with structure
+./vlt add secret/e2e/out-diff-a/k1 "val1" 2>/dev/null
+./vlt add secret/e2e/out-diff-a/k2 "same" 2>/dev/null
+./vlt add secret/e2e/out-diff-b/k2 "same" 2>/dev/null
+./vlt add secret/e2e/out-diff-b/k3 "val3" 2>/dev/null
+output=$(./vlt --output json diff secret/e2e/out-diff-a secret/e2e/out-diff-b 2>&1) || true
+if echo "$output" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert 'path1' in d and 'path2' in d
+assert 'only_in_first' in d or 'only_in_second' in d or 'unchanged' in d
+" 2>/dev/null; then
+    pass "diff --output json: structured diff result"
+else
+    fail "diff --output json (got: $output)"
+fi
+
+# history: JSON output with versions array
+output=$(./vlt --output json history secret/e2e/out-test 2>&1)
+if echo "$output" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert 'path' in d
+assert 'versions' in d
+assert isinstance(d['versions'], list)
+assert len(d['versions']) > 0
+assert 'version' in d['versions'][0]
+assert 'created_at' in d['versions'][0]
+" 2>/dev/null; then
+    pass "history --output json: path and versions array"
+else
+    fail "history --output json (got: $output)"
+fi
+
+# tree: JSON output with recursive structure
+./vlt add secret/e2e/out-tree/sub/leaf "val" 2>/dev/null
+output=$(./vlt --output json tree secret/e2e/out-tree 2>&1)
+if echo "$output" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert 'name' in d and 'is_dir' in d
+assert 'children' in d
+assert len(d['children']) > 0
+" 2>/dev/null; then
+    pass "tree --output json: nested tree structure"
+else
+    fail "tree --output json (got: $output)"
+fi
+
+# duplicates: JSON output
+./vlt add secret/e2e/out-dup/x "dup-val" 2>/dev/null
+./vlt add secret/e2e/out-dup/y "dup-val" 2>/dev/null
+output=$(./vlt --output json duplicates secret/e2e/out-dup 2>&1)
+if echo "$output" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert isinstance(d, list)
+assert len(d) > 0
+assert 'paths' in d[0]
+assert len(d[0]['paths']) >= 2
+" 2>/dev/null; then
+    pass "duplicates --output json: array of path groups"
+else
+    fail "duplicates --output json (got: $output)"
+fi
+
+# find: JSON output
+output=$(./vlt --output json find secret/e2e/out-test "*" 2>&1)
+if echo "$output" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert isinstance(d, list)
+assert len(d) > 0
+assert 'path' in d[0]
+" 2>/dev/null; then
+    pass "find --output json: array of path objects"
+else
+    fail "find --output json (got: $output)"
+fi
+
+# =============================================================================
+# YAML OUTPUT
+# =============================================================================
+log "Testing --output yaml..."
+
+# get: YAML output should contain the key name
+output=$(./vlt --output yaml get secret/e2e/out-test/mykey 2>&1)
+if [[ "$output" == *"mykey:"* ]]; then
+    pass "get --output yaml: contains key"
+else
+    fail "get --output yaml (got: $output)"
+fi
+
+# ls: YAML output should contain name fields
+output=$(./vlt --output yaml ls secret/e2e 2>&1)
+if [[ "$output" == *"name:"* ]] && [[ "$output" == *"type:"* ]]; then
+    pass "ls --output yaml: contains name and type fields"
+else
+    fail "ls --output yaml (got: $output)"
+fi
+
+# tree: YAML output should contain tree structure fields
+output=$(./vlt --output yaml tree secret/e2e/out-tree 2>&1)
+if [[ "$output" == *"name:"* ]] && [[ "$output" == *"children:"* ]]; then
+    pass "tree --output yaml: contains name and children"
+else
+    fail "tree --output yaml (got: $output)"
+fi
+
+# history: YAML output should contain versions
+output=$(./vlt --output yaml history secret/e2e/out-test 2>&1)
+if [[ "$output" == *"path:"* ]] && [[ "$output" == *"versions:"* ]]; then
+    pass "history --output yaml: contains path and versions"
+else
+    fail "history --output yaml (got: $output)"
+fi
+
+# =============================================================================
+# NO-COLOR OUTPUT
+# =============================================================================
+log "Testing --no-color and NO_COLOR..."
+
+# Helper: check for ANSI escape codes using cat -v (portable)
+# cat -v renders ESC as ^[, so we grep for that
+has_ansi() { echo "$1" | cat -v | grep -q '\^\\[' || echo "$1" | cat -v | grep -q '\^\['; }
+
+# --no-color: tree output should have no ANSI escape codes
+output=$(./vlt --no-color tree secret/e2e/out-tree 2>&1)
+if has_ansi "$output"; then
+    fail "--no-color tree: output contains ANSI codes"
+else
+    if [[ "$output" == *"out-tree"* ]]; then
+        pass "--no-color tree: no ANSI codes, content correct"
+    else
+        fail "--no-color tree: unexpected output (got: $output)"
+    fi
+fi
+
+# --no-color: diff output should have no ANSI escape codes
+output=$(./vlt --no-color diff secret/e2e/out-diff-a secret/e2e/out-diff-b 2>&1) || true
+if has_ansi "$output"; then
+    fail "--no-color diff: output contains ANSI codes"
+else
+    if [[ "$output" == *"Only in"* ]] || [[ "$output" == *"Comparing"* ]]; then
+        pass "--no-color diff: no ANSI codes, content correct"
+    else
+        fail "--no-color diff: unexpected output (got: $output)"
+    fi
+fi
+
+# --no-color: history output should have no ANSI escape codes
+output=$(./vlt --no-color history secret/e2e/out-test -v 2>&1)
+if has_ansi "$output"; then
+    fail "--no-color history: output contains ANSI codes"
+else
+    if [[ "$output" == *"History for"* ]]; then
+        pass "--no-color history: no ANSI codes, content correct"
+    else
+        fail "--no-color history: unexpected output (got: $output)"
+    fi
+fi
+
+# --no-color: ls output should have no ANSI escape codes
+output=$(./vlt --no-color ls secret/e2e 2>&1)
+if has_ansi "$output"; then
+    fail "--no-color ls: output contains ANSI codes"
+else
+    pass "--no-color ls: no ANSI codes"
+fi
+
+# NO_COLOR env var: same effect as --no-color
+output=$(NO_COLOR=1 ./vlt tree secret/e2e/out-tree 2>&1)
+if has_ansi "$output"; then
+    fail "NO_COLOR=1 tree: output contains ANSI codes"
+else
+    pass "NO_COLOR=1 tree: no ANSI escape codes"
+fi
+
+# NO_COLOR env var: diff
+output=$(NO_COLOR=1 ./vlt diff secret/e2e/out-diff-a secret/e2e/out-diff-b 2>&1) || true
+if has_ansi "$output"; then
+    fail "NO_COLOR=1 diff: output contains ANSI codes"
+else
+    pass "NO_COLOR=1 diff: no ANSI escape codes"
+fi
+
+# NO_COLOR env var: rollback --dry-run
+output=$(NO_COLOR=1 ./vlt rollback --dry-run secret/e2e/out-test 2>&1) || true
+if has_ansi "$output"; then
+    fail "NO_COLOR=1 rollback: output contains ANSI codes"
+else
+    pass "NO_COLOR=1 rollback: no ANSI escape codes"
+fi
+
+# =============================================================================
+# COMMAND ALIASES
+# =============================================================================
+log "Testing command aliases..."
+
+# list alias for ls
+output=$(./vlt list secret/e2e 2>&1)
+if [[ "$output" == *"out-test"* ]] || [[ "$output" == *"rb"* ]]; then
+    pass "alias: list works for ls"
+else
+    fail "alias: list (got: $output)"
+fi
+
+# read alias for get
+output=$(./vlt read secret/e2e/out-test/mykey 2>&1)
+if [[ "$output" == *"myvalue"* ]]; then
+    pass "alias: read works for get"
+else
+    fail "alias: read (got: $output)"
+fi
+
+# delete alias for rm
+./vlt add secret/e2e/alias-del/key "val" 2>/dev/null
+if ./vlt delete secret/e2e/alias-del/key 2>/dev/null; then
+    pass "alias: delete works for rm"
+else
+    fail "alias: delete"
+fi
+
+# hist alias for history
+output=$(./vlt hist secret/e2e/out-test 2>&1)
+if [[ "$output" == *"History for"* ]]; then
+    pass "alias: hist works for history"
+else
+    fail "alias: hist (got: $output)"
+fi
+
+# cp alias for copy (pre-existing)
+./vlt add secret/e2e/alias-cp-src/key "cpval" 2>/dev/null
+if ./vlt cp secret/e2e/alias-cp-src secret/e2e/alias-cp-dst 2>/dev/null; then
+    pass "alias: cp works for copy"
+else
+    fail "alias: cp"
+fi
+
+# =============================================================================
 # CLEANUP AND SUMMARY
 # =============================================================================
 log "Cleaning up..."

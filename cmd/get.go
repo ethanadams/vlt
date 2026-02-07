@@ -11,8 +11,9 @@ import (
 )
 
 var getCmd = &cobra.Command{
-	Use:   "get <path>",
-	Short: "Get secrets from a Vault path and print to stdout",
+	Use:     "get <path>",
+	Aliases: []string{"read"},
+	Short:   "Get secrets from a Vault path and print to stdout",
 	Long: `Get secrets from a Vault path and print to stdout.
 
 The path can refer to:
@@ -63,16 +64,22 @@ func runGet(ctx context.Context, path string) error {
 			if err != nil {
 				return err
 			}
+			if isStructuredOutput() {
+				return printOutput(map[string]any{resolved.Key: value})
+			}
 			fmt.Println(value)
 			return nil
 		}
-		// Path is a secret - print all its keys as YAML
+		// Path is a secret - print all its keys
 		data, err := client.ReadSecretRaw(ctx, resolved.SecretPath)
 		if err != nil {
 			return err
 		}
 		if len(data) == 0 {
 			return fmt.Errorf("no keys found in secret at %s", path)
+		}
+		if isStructuredOutput() {
+			return printOutput(data)
 		}
 		yamlData, err := yaml.Marshal(data)
 		if err != nil {
@@ -90,6 +97,10 @@ func runGet(ctx context.Context, path string) error {
 
 	if len(secrets) == 0 {
 		return fmt.Errorf("no secrets found at %s", path)
+	}
+
+	if isStructuredOutput() {
+		return printOutput(secrets)
 	}
 
 	yamlData, err := yaml.Marshal(secrets)

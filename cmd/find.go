@@ -61,6 +61,17 @@ func runFind(ctx context.Context, path, pattern string) error {
 		return fmt.Errorf("no keys matching %q found at %s", pattern, path)
 	}
 
+	if isStructuredOutput() {
+		type findResult struct {
+			Path string `json:"path" yaml:"path"`
+		}
+		var out []findResult
+		for _, r := range results {
+			out = append(out, findResult{Path: r.FullPath()})
+		}
+		return printOutput(out)
+	}
+
 	for _, r := range results {
 		fmt.Println(r.FullPath())
 	}

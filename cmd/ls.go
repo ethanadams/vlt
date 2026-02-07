@@ -16,8 +16,9 @@ var (
 )
 
 var lsCmd = &cobra.Command{
-	Use:   "ls <path>",
-	Short: "List secrets and directories",
+	Use:     "ls <path>",
+	Aliases: []string{"list"},
+	Short:   "List secrets and directories",
 	Long: `List secrets and directories at the given path.
 
 Use -l for detailed output including metadata.
@@ -45,6 +46,8 @@ func init() {
 }
 
 func runLs(ctx context.Context, path string) error {
+	initColor()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -74,16 +77,37 @@ func runLs(ctx context.Context, path string) error {
 		return fmt.Errorf("no secrets or directories found at %s", path)
 	}
 
+	if isStructuredOutput() {
+		type lsEntry struct {
+			Name      string `json:"name" yaml:"name"`
+			Type      string `json:"type" yaml:"type"`
+			Version   int    `json:"version,omitempty" yaml:"version,omitempty"`
+			UpdatedAt string `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+		}
+		var out []lsEntry
+		for _, entry := range entries {
+			e := lsEntry{Name: entry.Name, Type: "secret"}
+			if entry.IsDir {
+				e.Type = "directory"
+			} else {
+				e.Version = entry.Version
+				e.UpdatedAt = entry.UpdatedAt
+			}
+			out = append(out, e)
+		}
+		return printOutput(out)
+	}
+
 	for _, entry := range entries {
 		if lsLong {
 			if entry.IsDir {
-				fmt.Printf("d  %-40s\n", entry.Name+"/")
+				fmt.Printf("d  %-40s\n", colorCyan(entry.Name+"/"))
 			} else {
 				fmt.Printf("s  %-40s v%-4d %s\n", entry.Name, entry.Version, entry.UpdatedAt)
 			}
 		} else {
 			if entry.IsDir {
-				fmt.Printf("%s/\n", entry.Name)
+				fmt.Printf("%s\n", colorCyan(entry.Name+"/"))
 			} else {
 				fmt.Println(entry.Name)
 			}

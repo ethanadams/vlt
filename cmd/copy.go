@@ -60,7 +60,7 @@ func runCopy(ctx context.Context, src, dst string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Copied %d secrets\n", count)
+		fmt.Printf("Copied %d secrets from %s → %s\n", count, src, dst)
 		return nil
 	}
 

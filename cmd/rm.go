@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/ethanadams/vlt/pkg/config"
 	"github.com/ethanadams/vlt/pkg/vault"
@@ -12,8 +13,9 @@ import (
 var rmRecursive bool
 
 var rmCmd = &cobra.Command{
-	Use:   "rm <path>",
-	Short: "Remove a key, secret, or directory",
+	Use:     "rm <path>",
+	Aliases: []string{"delete"},
+	Short:   "Remove a key, secret, or directory",
 	Long: `Remove a key, secret, or directory at the given path.
 
 The path is resolved to determine what to delete:
@@ -91,8 +93,9 @@ func runRm(ctx context.Context, path string) error {
 		return err
 	}
 
-	for _, deleted := range result.Deleted {
-		fmt.Printf("Deleted %s\n", deleted)
+	if result.Count > 1 {
+		fmt.Fprintf(os.Stderr, "\r\033[K")
 	}
+	fmt.Printf("Deleted %d secrets from %s\n", result.Count, path)
 	return nil
 }

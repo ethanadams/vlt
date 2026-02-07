@@ -94,6 +94,8 @@ func init() {
 // Use vault.DiffResult, vault.DiffEntry, vault.ChangedEntry from pkg/vault/compare.go
 
 func runDiff(ctx context.Context, path1, path2 string) error {
+	initColor()
+
 	// Check if either path is a local file
 	path1IsFile := isLocalFile(path1)
 	path2IsFile := isLocalFile(path2)
@@ -117,7 +119,28 @@ func runDiff(ctx context.Context, path1, path2 string) error {
 	}
 
 	if !diffQuiet {
-		printDiffResult(path1, path2, result)
+		if isStructuredOutput() {
+			type diffOutput struct {
+				Path1        string              `json:"path1" yaml:"path1"`
+				Path2        string              `json:"path2" yaml:"path2"`
+				OnlyInFirst  []vault.DiffEntry   `json:"only_in_first,omitempty" yaml:"only_in_first,omitempty"`
+				OnlyInSecond []vault.DiffEntry   `json:"only_in_second,omitempty" yaml:"only_in_second,omitempty"`
+				Changed      []vault.ChangedEntry `json:"changed,omitempty" yaml:"changed,omitempty"`
+				Unchanged    int                 `json:"unchanged" yaml:"unchanged"`
+			}
+			if err := printOutput(diffOutput{
+				Path1:        path1,
+				Path2:        path2,
+				OnlyInFirst:  result.OnlyInFirst,
+				OnlyInSecond: result.OnlyInSecond,
+				Changed:      result.Changed,
+				Unchanged:    result.Unchanged,
+			}); err != nil {
+				return err
+			}
+		} else {
+			printDiffResult(path1, path2, result)
+		}
 	}
 
 	if result.HasDifferences() {
@@ -283,9 +306,9 @@ func printDiffResult(path1, path2 string, result *vault.DiffResult) {
 		fmt.Printf("Only in %s:\n", path1)
 		for _, dk := range result.OnlyInFirst {
 			if diffShowValues {
-				fmt.Printf("  - %s: %s\n", dk.Key, truncateValue(dk.Value))
+				fmt.Printf("  %s %s: %s\n", colorRed("-"), dk.Key, truncateValue(dk.Value))
 			} else {
-				fmt.Printf("  - %s\n", dk.Key)
+				fmt.Printf("  %s %s\n", colorRed("-"), dk.Key)
 			}
 		}
 		fmt.Println()
@@ -295,9 +318,9 @@ func printDiffResult(path1, path2 string, result *vault.DiffResult) {
 		fmt.Printf("Only in %s:\n", path2)
 		for _, dk := range result.OnlyInSecond {
 			if diffShowValues {
-				fmt.Printf("  + %s: %s\n", dk.Key, truncateValue(dk.Value))
+				fmt.Printf("  %s %s: %s\n", colorGreen("+"), dk.Key, truncateValue(dk.Value))
 			} else {
-				fmt.Printf("  + %s\n", dk.Key)
+				fmt.Printf("  %s %s\n", colorGreen("+"), dk.Key)
 			}
 		}
 		fmt.Println()
@@ -307,13 +330,13 @@ func printDiffResult(path1, path2 string, result *vault.DiffResult) {
 		fmt.Println("Changed:")
 		for _, ck := range result.Changed {
 			if diffShowValues {
-				fmt.Printf("  ~ %s:\n", ck.Key)
-				fmt.Printf("      - %s\n", truncateValue(ck.FirstValue))
-				fmt.Printf("      + %s\n", truncateValue(ck.SecondValue))
+				fmt.Printf("  %s %s:\n", colorYellow("~"), ck.Key)
+				fmt.Printf("      %s %s\n", colorRed("-"), truncateValue(ck.FirstValue))
+				fmt.Printf("      %s %s\n", colorGreen("+"), truncateValue(ck.SecondValue))
 			} else if diffKeysOnly {
-				fmt.Printf("  ~ %s\n", ck.Key)
+				fmt.Printf("  %s %s\n", colorYellow("~"), ck.Key)
 			} else {
-				fmt.Printf("  ~ %s (%d → %d chars)\n", ck.Key, ck.FirstLen, ck.SecondLen)
+				fmt.Printf("  %s %s (%d → %d chars)\n", colorYellow("~"), ck.Key, ck.FirstLen, ck.SecondLen)
 			}
 		}
 		fmt.Println()

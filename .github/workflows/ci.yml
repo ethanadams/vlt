@@ -79,3 +79,36 @@ jobs:
         with:
           name: vlt-${{ matrix.os }}
           path: vlt${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+  e2e-test:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Start OpenBao
+        run: docker compose up -d
+
+      - name: Wait for OpenBao
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:8200/v1/sys/health > /dev/null 2>&1; then
+              echo "OpenBao is ready"
+              exit 0
+            fi
+            echo "Waiting for OpenBao... ($i/30)"
+            sleep 1
+          done
+          echo "OpenBao failed to start"
+          exit 1
+
+      - name: Run E2E tests
+        run: make test-e2e
+
+      - name: Stop OpenBao
+        if: always()
+        run: docker compose down

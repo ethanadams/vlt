@@ -679,3 +679,100 @@ func (c *Client) collectValues(ctx context.Context, basePath, prefix string, val
 
 	return nil
 }
+
+// RollbackResult contains information about a rollback operation
+type RollbackResult struct {
+	Path       string
+	OldVersion int
+	NewVersion int
+	Changes    []VersionChange
+}
+
+// Rollback rolls back a secret to a previous version.
+// If version is 0, rolls back to the immediately previous version.
+// Otherwise, rolls back to the specified version.
+func (c *Client) Rollback(ctx context.Context, path string, version int) (*RollbackResult, error) {
+	// Get current metadata
+	metadata, err := c.GetMetadata(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata for %s: %w", path, err)
+	}
+	if metadata == nil {
+		return nil, fmt.Errorf("secret not found at %s", path)
+	}
+
+	currentVersion := metadata.CurrentVersion
+
+	// Determine target version
+	targetVersion := version
+	if targetVersion == 0 {
+		if currentVersion <= 1 {
+			return nil, fmt.Errorf("no previous version to rollback to (current version is %d)", currentVersion)
+		}
+		targetVersion = currentVersion - 1
+	}
+
+	if targetVersion >= currentVersion {
+		return nil, fmt.Errorf("target version %d must be less than current version %d", targetVersion, currentVersion)
+	}
+	if targetVersion < 1 {
+		return nil, fmt.Errorf("invalid target version: %d", targetVersion)
+	}
+
+	// Read the target version
+	targetData, err := c.ReadSecretVersion(ctx, path, targetVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read version %d: %w", targetVersion, err)
+	}
+	if targetData == nil {
+		return nil, fmt.Errorf("version %d not found or has been destroyed", targetVersion)
+	}
+
+	// Get changes for reporting
+	changes, _ := c.CompareVersions(ctx, path, currentVersion, targetVersion)
+
+	// Write the target version data as a new version
+	if err := c.WriteSecret(ctx, path, targetData); err != nil {
+		return nil, fmt.Errorf("failed to write rollback data: %w", err)
+	}
+
+	return &RollbackResult{
+		Path:       path,
+		OldVersion: currentVersion,
+		NewVersion: currentVersion + 1,
+		Changes:    changes,
+	}, nil
+}
+
+// RollbackRecursiveResult contains information about a recursive rollback
+type RollbackRecursiveResult struct {
+	Results []*RollbackResult
+	Skipped []string
+}
+
+// RollbackRecursive rolls back all secrets under a path to their previous versions.
+// Secrets at version 1 are skipped.
+func (c *Client) RollbackRecursive(ctx context.Context, path string) (*RollbackRecursiveResult, error) {
+	secretPaths, err := c.ListSecretPaths(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list secrets under %s: %w", path, err)
+	}
+
+	if len(secretPaths) == 0 {
+		return nil, fmt.Errorf("no secrets found under %s", path)
+	}
+
+	result := &RollbackRecursiveResult{}
+
+	for _, relPath := range secretPaths {
+		fullPath := path + "/" + relPath
+		rbResult, err := c.Rollback(ctx, fullPath, 0)
+		if err != nil {
+			result.Skipped = append(result.Skipped, relPath)
+			continue
+		}
+		result.Results = append(result.Results, rbResult)
+	}
+
+	return result, nil
+}

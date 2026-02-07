@@ -37,6 +37,8 @@ func init() {
 }
 
 func runTree(ctx context.Context, path string) error {
+	initColor()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -57,6 +59,24 @@ func runTree(ctx context.Context, path string) error {
 		return err
 	}
 
+	if isStructuredOutput() {
+		type treeJSON struct {
+			Name     string      `json:"name" yaml:"name"`
+			Path     string      `json:"path" yaml:"path"`
+			IsDir    bool        `json:"is_dir" yaml:"is_dir"`
+			Children []*treeJSON `json:"children,omitempty" yaml:"children,omitempty"`
+		}
+		var toJSON func(n *vault.TreeNode) *treeJSON
+		toJSON = func(n *vault.TreeNode) *treeJSON {
+			j := &treeJSON{Name: n.Name, Path: n.FullPath, IsDir: n.IsDir}
+			for _, c := range n.Children {
+				j.Children = append(j.Children, toJSON(c))
+			}
+			return j
+		}
+		return printOutput(toJSON(tree))
+	}
+
 	printTree(tree, treeLong)
 
 	// Print summary
@@ -75,7 +95,7 @@ func printTree(tree *vault.TreeNode, showMetadata bool) {
 	tree.Walk(func(node *vault.TreeNode, depth int, isLast bool) {
 		if depth == 0 {
 			// Root node
-			fmt.Println(node.Name)
+			fmt.Println(colorBold(node.Name))
 			prefixes = []string{}
 			return
 		}
@@ -96,15 +116,20 @@ func printTree(tree *vault.TreeNode, showMetadata bool) {
 		}
 
 		// Print the node
+		displayName := node.Name
+		if node.IsDir {
+			displayName = colorCyan(node.Name)
+		}
+
 		if showMetadata && node.Metadata != nil {
 			fmt.Printf("%s%s  v%d  %s\n",
 				prefix.String(),
-				node.Name,
+				displayName,
 				node.Metadata.CurrentVersion,
 				node.Metadata.UpdatedTime.Local().Format("2006-01-02 15:04:05"),
 			)
 		} else {
-			fmt.Printf("%s%s\n", prefix.String(), node.Name)
+			fmt.Printf("%s%s\n", prefix.String(), displayName)
 		}
 
 		// Update prefixes for children

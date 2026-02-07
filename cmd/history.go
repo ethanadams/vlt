@@ -17,8 +17,9 @@ var (
 )
 
 var historyCmd = &cobra.Command{
-	Use:   "history <path>",
-	Short: "Show version history for secrets",
+	Use:     "history <path>",
+	Aliases: []string{"hist"},
+	Short:   "Show version history for secrets",
 	Long: `Show version history for a secret or directory.
 
 For a single secret, shows all versions with timestamps.
@@ -46,6 +47,8 @@ func init() {
 }
 
 func runHistory(ctx context.Context, path string) error {
+	initColor()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -99,6 +102,26 @@ func showSecretHistory(ctx context.Context, client *vault.Client, path string) e
 		limit = len(versions)
 	}
 
+	if isStructuredOutput() {
+		type versionEntry struct {
+			Version   int    `json:"version" yaml:"version"`
+			CreatedAt string `json:"created_at" yaml:"created_at"`
+			Current   bool   `json:"current,omitempty" yaml:"current,omitempty"`
+		}
+		var entries []versionEntry
+		for i, v := range versions[:limit] {
+			entries = append(entries, versionEntry{
+				Version:   v.Version,
+				CreatedAt: v.CreatedTime.Local().Format("2006-01-02T15:04:05"),
+				Current:   i == 0,
+			})
+		}
+		return printOutput(map[string]any{
+			"path":     path,
+			"versions": entries,
+		})
+	}
+
 	fmt.Printf("History for %s:\n\n", path)
 
 	for i, v := range versions[:limit] {
@@ -107,7 +130,8 @@ func showSecretHistory(ctx context.Context, client *vault.Client, path string) e
 			current = "  (current)"
 		}
 
-		fmt.Printf("v%-3d  %s%s\n", v.Version, v.CreatedTime.Local().Format("2006-01-02 15:04:05"), current)
+		timestamp := colorCyan(v.CreatedTime.Local().Format("2006-01-02 15:04:05"))
+		fmt.Printf("v%-3d  %s%s\n", v.Version, timestamp, current)
 
 		// Verbose mode: show what changed
 		if (historyVerbose || historyShowValues) && i < limit-1 {
@@ -156,7 +180,7 @@ func showDirectoryHistory(ctx context.Context, client *vault.Client, path string
 		}
 
 		fmt.Printf("%s  %-20s  %s\n",
-			entry.Time.Local().Format("2006-01-02 15:04:05"),
+			colorCyan(entry.Time.Local().Format("2006-01-02 15:04:05")),
 			entry.SecretPath,
 			action,
 		)
@@ -184,19 +208,19 @@ func formatVersionChange(change vault.VersionChange, showValues bool) string {
 	switch change.Type {
 	case vault.ChangeAdded:
 		if showValues {
-			return fmt.Sprintf("+ %s: %s", change.Key, change.NewValue)
+			return colorGreen(fmt.Sprintf("+ %s: %s", change.Key, change.NewValue))
 		}
-		return fmt.Sprintf("+ %s", change.Key)
+		return colorGreen(fmt.Sprintf("+ %s", change.Key))
 	case vault.ChangeModified:
 		if showValues {
-			return fmt.Sprintf("~ %s: %s → %s", change.Key, change.OldValue, change.NewValue)
+			return colorYellow(fmt.Sprintf("~ %s: %s → %s", change.Key, change.OldValue, change.NewValue))
 		}
-		return fmt.Sprintf("~ %s (%d → %d chars)", change.Key, change.OldLength, change.NewLength)
+		return colorYellow(fmt.Sprintf("~ %s (%d → %d chars)", change.Key, change.OldLength, change.NewLength))
 	case vault.ChangeDeleted:
 		if showValues {
-			return fmt.Sprintf("- %s: %s", change.Key, change.OldValue)
+			return colorRed(fmt.Sprintf("- %s: %s", change.Key, change.OldValue))
 		}
-		return fmt.Sprintf("- %s", change.Key)
+		return colorRed(fmt.Sprintf("- %s", change.Key))
 	default:
 		return change.Key
 	}

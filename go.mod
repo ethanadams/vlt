@@ -3,6 +3,7 @@ module github.com/ethanadams/vlt
 go 1.24.4
 
 require (
+	github.com/fatih/color v1.18.0
 	github.com/getsops/sops/v3 v3.11.0
 	github.com/hashicorp/vault/api v1.22.0
 	github.com/spf13/cobra v1.10.2
@@ -75,7 +76,6 @@ require (
 	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.35.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.2.1 // indirect
-	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/getsops/gopgagent v0.0.0-20241224165529-7044f28e491e // indirect
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect

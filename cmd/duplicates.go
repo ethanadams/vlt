@@ -56,8 +56,22 @@ func runDuplicates(ctx context.Context, path string) error {
 	}
 
 	if len(duplicates) == 0 {
+		if isStructuredOutput() {
+			return printOutput([]any{})
+		}
 		fmt.Println("No duplicate values found.")
 		return nil
+	}
+
+	if isStructuredOutput() {
+		type dupGroup struct {
+			Paths []string `json:"paths" yaml:"paths"`
+		}
+		var out []dupGroup
+		for _, group := range duplicates {
+			out = append(out, dupGroup{Paths: group.Paths})
+		}
+		return printOutput(out)
 	}
 
 	for _, group := range duplicates {
