@@ -54,6 +54,22 @@ func runRm(ctx context.Context, path string) error {
 		return err
 	}
 
+	// When -r is specified, check for directory first
+	if rmRecursive {
+		dirs, hasSecrets, err := client.ListDirectories(ctx, path)
+		if err == nil && (hasSecrets || len(dirs) > 0) {
+			result, err := client.DeleteRecursive(ctx, path)
+			if err != nil {
+				return err
+			}
+			if result.Count > 1 {
+				fmt.Fprintf(os.Stderr, "\r\033[K")
+			}
+			fmt.Printf("Deleted %d secrets from %s\n", result.Count, path)
+			return nil
+		}
+	}
+
 	// Try to resolve the path to see if it's a key within a secret
 	resolved, err := client.ResolvePath(ctx, path)
 	if err == nil {
